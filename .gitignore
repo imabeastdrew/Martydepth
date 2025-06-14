@@ -39,10 +39,10 @@ ENV/
 # Data
 # Allow wandb API key and data
 !wandb_api_key.txt
-!data/interim/
-!data/interim/*
-
-# Ignore other data directories
+# Allow tokenizer info files
+!data/interim/*/tokenizer_info.json
+# Ignore large pickle files
+data/interim/*/*.pkl
 data/raw/
 data/processed/
 data/external/
@@ -62,10 +62,8 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
-# Allow wandb API key and data
+# Allow wandb API key
 !wandb_api_key.txt
-!data/interim/
-!data/interim/*
 
 # Ignore checkpoints
 checkpoints/
