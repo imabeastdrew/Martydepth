@@ -1,8 +1,8 @@
-numpy==1.24.3
+numpy
 torch==2.5.1
 torchvision==0.20.1
 torchaudio==2.5.1
-wandb==0.15.12
+wandb
 tqdm>=4.65.0
 pandas>=2.0.0
 pathlib>=1.0.1
