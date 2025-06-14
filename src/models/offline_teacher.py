@@ -9,7 +9,7 @@ class OfflineTeacherEmbeddings(nn.Module):
     def __init__(self, melody_vocab_size, chord_vocab_size, embed_dim, max_seq_length):
         super().__init__()
         
-        # Token embeddings (512-dim to match paper)
+        # Token embeddings (512-dim)
         self.melody_embedding = nn.Embedding(melody_vocab_size, embed_dim)
         self.chord_embedding = nn.Embedding(chord_vocab_size, embed_dim)
         
@@ -337,7 +337,7 @@ if __name__ == "__main__":
     # Forward pass
     chord_logits = model(melody_tokens, chord_tokens)
     
-    print(f"\n✅ Test Results:")
+    print(f"\n Test Results:")
     print(f"Melody input shape: {melody_tokens.shape}")
     print(f"Chord input shape: {chord_tokens.shape}")
     print(f"Chord logits shape: {chord_logits.shape}")
@@ -345,4 +345,4 @@ if __name__ == "__main__":
     
     # Verify shapes
     assert chord_logits.shape == (batch_size, chord_seq, 74)
-    print("✅ All shapes correct!") 
+    print(" All shapes correct!") 

@@ -13,13 +13,13 @@ class TrainingConfig:
     num_workers: int = 4
     
     # Model parameters
-    vocab_size: int = 4753  # Total vocabulary size
-    melody_vocab_size: int = 177  # Size of melody vocabulary
+    vocab_size: int = 4833           # UPDATED: 257 + 4576
+    melody_vocab_size: int = 257     # UPDATED: MIDI vocab
     embed_dim: int = 480  # Match model architecture
     num_layers: int = 8   # Match model architecture
     num_heads: int = 6    # Match model architecture
     feedforward_dim: int = 1920  # 4 * embed_dim
-    sequence_length: int = 512
+    sequence_length: int = 256
     dropout: float = 0.1
     
     # Training parameters

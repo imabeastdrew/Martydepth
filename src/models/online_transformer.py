@@ -81,13 +81,13 @@ class OnlineTransformer(nn.Module):
     - Odd indices (1,3,5,...): chord tokens
     
     Vocabulary structure:
-    - Token IDs 0 to melody_vocab_size-1: melody tokens
-    - Token IDs melody_vocab_size to vocab_size-1: chord tokens
+    - Token IDs 0 to 256: melody tokens (MIDI)
+    - Token IDs 257 to 4832: chord tokens
     """
     
     def __init__(self,
-                 vocab_size: int = 4753,  # Total vocabulary size
-                 melody_vocab_size: int = 177,  # Size of melody vocabulary
+                 vocab_size: int = 4833,  # Total vocabulary size (257 + 4576)
+                 melody_vocab_size: int = 257,  # MIDI-based melody vocabulary
                  embed_dim: int = 480,  # Match ReaLChords paper
                  num_layers: int = 8,  # Match ReaLChords paper
                  num_heads: int = 6,  # Match ReaLChords paper
@@ -160,12 +160,12 @@ class OnlineTransformer(nn.Module):
         
         # Check melody tokens are in valid range at melody positions
         if torch.any((input_tokens[:, melody_positions] >= self.melody_vocab_size)):
-            raise ValueError("Melody tokens must be in range [0, melody_vocab_size)")
+            raise ValueError("Melody tokens must be in range [0, 257)")
         
         # Check chord tokens are in valid range at chord positions
         if torch.any((input_tokens[:, chord_positions] < self.melody_vocab_size) | 
                     (input_tokens[:, chord_positions] >= self.vocab_size)):
-            raise ValueError("Chord tokens must be in range [melody_vocab_size, vocab_size)")
+            raise ValueError("Chord tokens must be in range [257, 4833)")
         
         # Standard sequence position embeddings
         position_indices = torch.arange(seq_length, device=input_tokens.device)
@@ -197,9 +197,9 @@ if __name__ == "__main__":
     batch_size = 4
     seq_length = 256
     
-    # Create dummy input with proper token ranges
-    melody_tokens = torch.randint(0, 177, (batch_size, seq_length//2))  # Melody tokens
-    chord_tokens = torch.randint(177, 4753, (batch_size, seq_length//2))  # Chord tokens
+    # Create dummy input with proper token ranges (MIDI-based)
+    melody_tokens = torch.randint(0, 257, (batch_size, seq_length//2))  # Melody tokens: 0-256
+    chord_tokens = torch.randint(257, 4833, (batch_size, seq_length//2))  # Chord tokens: 257-4832
     
     # Interleave melody and chord tokens
     input_tokens = torch.stack([

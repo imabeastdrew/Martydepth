@@ -13,8 +13,8 @@ from collections import defaultdict
 import random
 
 # Token ID ranges
-MELODY_TOKEN_START = 0      # Melody tokens: 0-176 (177 tokens)
-CHORD_TOKEN_START = 177     # Chord tokens: 177-4752 (4576 tokens)
+MELODY_TOKEN_START = 0      # Melody tokens: 0-256 (257 tokens)
+CHORD_TOKEN_START = 257     # Chord tokens: 257-4832 (4576 tokens)
 SILENCE_TOKEN = 0           # Shared silence token
 
 @dataclass
@@ -98,50 +98,43 @@ class ChordTokenizer:
         root, intervals, inversion, is_onset = self.token_to_chord[token]
         return root, list(intervals), inversion, is_onset
 
-class MelodyTokenizer:
+class MIDITokenizer:
     def __init__(self):
-        self.note_to_token = {}  # Maps (pitch_class, octave) → (onset_token, hold_token)
-        self.token_to_note = {}  # Maps token_id → (pitch_class, octave, is_onset)
-        self.next_token_id = MELODY_TOKEN_START + 1  # Start after silence token
-        self.silence_token = SILENCE_TOKEN
-        self.note_to_token[(-1, -1)] = (self.silence_token, self.silence_token)
-        self.token_to_note[self.silence_token] = (-1, -1, False)
-        
-    def encode_note(self, pitch_class: int, octave: int) -> Tuple[int, int]:
-        """Encode a note into onset and hold token IDs"""
-        note_key = (pitch_class, octave)
-        
-        if note_key not in self.note_to_token:
-            # Create new onset and hold tokens
-            onset_token = self.next_token_id
-            hold_token = self.next_token_id + 1
-            self.next_token_id += 2
-            
-            # Ensure we don't exceed melody vocabulary size
-            if hold_token >= CHORD_TOKEN_START:  # Must stay within melody range
-                raise ValueError("Melody vocabulary size exceeded")
-            
-            self.note_to_token[note_key] = (onset_token, hold_token)
-            self.token_to_note[onset_token] = (pitch_class, octave, True)
-            self.token_to_note[hold_token] = (pitch_class, octave, False)
-            
-        return self.note_to_token[note_key]
-    
+        self.silence_token = SILENCE_TOKEN  # 0
+        self.midi_onset_start = 1           # MIDI 0-127 onset: tokens 1-128
+        self.midi_hold_start = 129          # MIDI 0-127 hold: tokens 129-256
+        self.max_midi_note = 127
+        # Pre-populate the mappings
+        self.note_to_token = {(-1, -1): (self.silence_token, self.silence_token)}
+        self.token_to_note = {self.silence_token: (-1, -1, False)}
+        for midi_num in range(128):
+            onset_token = self.midi_onset_start + midi_num
+            hold_token = self.midi_hold_start + midi_num
+            self.note_to_token[midi_num] = (onset_token, hold_token)
+            self.token_to_note[onset_token] = (midi_num, -1, True)
+            self.token_to_note[hold_token] = (midi_num, -1, False)
+    def encode_midi_note(self, midi_number: int) -> Tuple[int, int]:
+        if midi_number < 0 or midi_number > 127:
+            return self.silence_token, self.silence_token
+        onset_token = self.midi_onset_start + midi_number
+        hold_token = self.midi_hold_start + midi_number
+        return onset_token, hold_token
     def decode_note(self, token: int) -> Tuple[int, int, bool]:
-        """Decode a token ID back into note components and onset status"""
         if token == self.silence_token:
             return -1, -1, False
         if token not in self.token_to_note:
             raise ValueError(f"Unknown token ID: {token}")
-            
-        pitch_class, octave, is_onset = self.token_to_note[token]
-        return pitch_class, octave, is_onset
+        midi_num, unused, is_onset = self.token_to_note[token]
+        return midi_num, unused, is_onset
+    @property
+    def next_token_id(self):
+        return CHORD_TOKEN_START
 
 class FramePreprocessor:
     def __init__(self, sequence_length: int = 256):
         self.sequence_length = sequence_length
         self.chord_tokenizer = ChordTokenizer()
-        self.melody_tokenizer = MelodyTokenizer()
+        self.melody_tokenizer = MIDITokenizer()  # Changed from MelodyTokenizer
         
     def _get_key_context(self, song_data: Dict, start_frame: int, end_frame: int) -> np.ndarray:
         """Extract key context for a specific frame range"""
@@ -204,54 +197,45 @@ class FramePreprocessor:
         return meter_context
     
     def convert_song_to_frames(self, song_data: Dict) -> Tuple[List[int], List[int]]:
-        """Convert a song to frame sequences using the existing pipeline"""
-        num_beats = int(song_data['annotations']['num_beats'])  # Ensure integer
-        total_frames = num_beats * 4  # 4 frames per beat
+        """Convert a song to frame sequences using MIDI representation"""
+        num_beats = int(song_data['annotations']['num_beats'])
+        total_frames = num_beats * 4
         
         # Initialize with silence tokens
         melody_tokens = [self.melody_tokenizer.silence_token] * total_frames
         chord_tokens = [self.chord_tokenizer.silence_token] * total_frames
         
-        # Convert melody notes
+        # Convert melody notes to MIDI
         for note in song_data['annotations']['melody']:
             onset_frame = int(note['onset'] * 4)
             offset_frame = int(note['offset'] * 4)
-            
-            # Create note tokens (onset and hold)
             pitch_class = note['pitch_class']
             octave = note['octave']
-            onset_token, hold_token = self.melody_tokenizer.encode_note(pitch_class, octave)
-            
-            # Fill frames
+            midi_number = (octave + 1) * 12 + pitch_class  # Convert to MIDI
+            if midi_number < 0 or midi_number > 127:
+                print(f"Warning: MIDI number {midi_number} out of range, skipping")
+                continue
+            onset_token, hold_token = self.melody_tokenizer.encode_midi_note(midi_number)
             if onset_frame < total_frames:
                 melody_tokens[onset_frame] = onset_token
                 for frame in range(onset_frame + 1, min(offset_frame, total_frames)):
                     melody_tokens[frame] = hold_token
-        
-        # Convert chords using the tokenizer
+        # Chord processing stays the same
         for chord in song_data['annotations']['harmony']:
             onset_frame = int(chord['onset'] * 4)
             offset_frame = int(chord['offset'] * 4)
-            
             try:
-                # Get chord components
                 root = chord['root_pitch_class']
                 intervals = chord['root_position_intervals']
                 inversion = chord.get('inversion', 0)
-                
-                # Encode chord using tokenizer (now returns onset and hold tokens)
                 onset_token, hold_token = self.chord_tokenizer.encode_chord(root, intervals, inversion)
-                
-                # Fill frames
                 if onset_frame < total_frames:
                     chord_tokens[onset_frame] = onset_token
                     for frame in range(onset_frame + 1, min(offset_frame, total_frames)):
                         chord_tokens[frame] = hold_token
-                        
             except (KeyError, ValueError) as e:
                 print(f"Warning: Invalid chord in song: {e}")
                 continue
-        
         return melody_tokens, chord_tokens
     
     def process_song(self, song_id: str, song_data: Dict) -> List[FrameSequence]:
@@ -299,30 +283,22 @@ class FramePreprocessor:
         return sequences
 
 def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTokenizer, 
-                       melody_tokenizer: MelodyTokenizer, output_dir: Path):
+                       melody_tokenizer: MIDITokenizer, output_dir: Path):
     """Save processed sequences and tokenizer info"""
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Convert sequences to dictionaries for serialization
     sequence_dicts = [seq.to_dict() for seq in sequences]
-    
-    # Save sequences
-    split_name = output_dir.name  # Get 'train', 'valid', or 'test' from path
+    split_name = output_dir.name
     with open(output_dir / f'frame_sequences_{split_name}.pkl', 'wb') as f:
         pickle.dump(sequence_dicts, f)
-    
-    # Save tokenizer info
     tokenizer_info = {
         'chord_to_token': {str(k): v for k, v in chord_tokenizer.chord_to_token.items()},
         'token_to_chord': {str(k): v for k, v in chord_tokenizer.token_to_chord.items()},
         'chord_vocab_size': chord_tokenizer.next_token_id - CHORD_TOKEN_START,
         'note_to_token': {str(k): v for k, v in melody_tokenizer.note_to_token.items()},
         'token_to_note': {str(k): v for k, v in melody_tokenizer.token_to_note.items()},
-        'melody_vocab_size': melody_tokenizer.next_token_id - MELODY_TOKEN_START,
-        'total_vocab_size': (chord_tokenizer.next_token_id - CHORD_TOKEN_START + 
-                           melody_tokenizer.next_token_id - MELODY_TOKEN_START)
+        'melody_vocab_size': 257,  # Fixed size for MIDI
+        'total_vocab_size': 257 + (chord_tokenizer.next_token_id - CHORD_TOKEN_START)
     }
-    
     with open(output_dir / 'tokenizer_info.json', 'w') as f:
         json.dump(tokenizer_info, f, indent=2)
 
