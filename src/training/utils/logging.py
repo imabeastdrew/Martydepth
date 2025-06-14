@@ -6,11 +6,12 @@ import os
 from pathlib import Path
 import wandb
 import torch
+from typing import Any, Dict
 
 from src.training.config import TrainingConfig
 
-def init_wandb(config: TrainingConfig, name: str) -> wandb.Run:
-    """Initialize Weights & Biases run"""
+def init_wandb(config: TrainingConfig, name: str) -> Any:
+    """Initialize wandb run"""
     # Create checkpoint directory
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     
@@ -19,7 +20,7 @@ def init_wandb(config: TrainingConfig, name: str) -> wandb.Run:
         project=config.wandb_project,
         entity=config.wandb_entity,
         name=name,
-        config=config.to_dict()
+        config=config.__dict__
     )
     
     return run
@@ -28,10 +29,8 @@ def log_metrics(metrics: dict, step: int):
     """Log metrics to wandb"""
     wandb.log(metrics, step=step)
 
-def log_model_artifact(model: torch.nn.Module,
-                      name: str,
-                      metadata: dict = None):
-    """Save model checkpoint and log as wandb artifact"""
+def log_model_artifact(model: Any, name: str, metadata: Dict[str, Any] = None) -> None:
+    """Log model as wandb artifact"""
     # Save checkpoint
     checkpoint_path = Path("checkpoints") / f"{name}.pt"
     torch.save({
@@ -42,8 +41,8 @@ def log_model_artifact(model: torch.nn.Module,
     # Log as artifact
     artifact = wandb.Artifact(
         name=name,
-        type='model',
-        description='Model checkpoint',
+        type="model",
+        description="Model checkpoint",
         metadata=metadata or {}
     )
     artifact.add_file(str(checkpoint_path))
