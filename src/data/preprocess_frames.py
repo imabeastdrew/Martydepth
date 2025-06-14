@@ -307,7 +307,8 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
     sequence_dicts = [seq.to_dict() for seq in sequences]
     
     # Save sequences
-    with open(output_dir / 'frame_sequences.pkl', 'wb') as f:
+    split_name = output_dir.name  # Get 'train', 'valid', or 'test' from path
+    with open(output_dir / f'frame_sequences_{split_name}.pkl', 'wb') as f:
         pickle.dump(sequence_dicts, f)
     
     # Save tokenizer info

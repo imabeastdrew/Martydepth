@@ -80,7 +80,7 @@ class FrameDataset(Dataset):
         
     def _load_sequences(self) -> List[FrameSequence]:
         """Load sequences from pickle file"""
-        with open(self.data_dir / self.split / 'frame_sequences.pkl', 'rb') as f:
+        with open(self.data_dir / self.split / f'frame_sequences_{self.split}.pkl', 'rb') as f:
             sequence_dicts = pickle.load(f)
         return [FrameSequence.from_dict(d) for d in sequence_dicts]
     
