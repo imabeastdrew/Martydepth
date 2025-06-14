@@ -125,24 +125,15 @@ class FrameDataset(Dataset):
         }
     
     def _get_offline_format(self, sequence: FrameSequence) -> Dict[str, torch.Tensor]:
-        """Get full context training format with interleaved sequences"""
+        """Get full context training format for offline teacher model"""
         # Convert numpy arrays to tensors (no device placement)
         melody_tokens = torch.tensor(sequence.melody_tokens, dtype=torch.long)
         chord_tokens = torch.tensor(sequence.chord_tokens, dtype=torch.long)
         
-        # Create interleaved sequence
-        input_tokens = self._interleave_sequences(
-            sequence.melody_tokens[:-1],  # [0:T-1]
-            sequence.chord_tokens[:-1]    # [0:T-1]
-        )
-        input_tokens = torch.tensor(input_tokens, dtype=torch.long)
-        
-        # Target is next chord token
-        target_chord = torch.tensor(sequence.chord_tokens[1:], dtype=torch.long)
-        
         return {
-            'input_tokens': input_tokens,  # [2*(T-1)]
-            'target_chord': target_chord,  # [T-1]
+            'melody_tokens': melody_tokens,           # [T] - full melody sequence
+            'chord_input': chord_tokens[:-1],         # [T-1] - causal chord input
+            'chord_target': chord_tokens[1:],         # [T-1] - next chord targets
             'song_id': sequence.song_id,
             'start_frame': sequence.start_frame
         }
@@ -153,8 +144,14 @@ class FrameDataset(Dataset):
         
         Returns:
             Dictionary containing:
+            For online mode:
             - input_tokens: Interleaved melody and chord tokens [2*(T-1)]
             - target_chord: Target chord tokens [T-1]
+            For offline mode:
+            - melody_tokens: Full melody sequence [T]
+            - chord_input: Causal chord input [T-1]
+            - chord_target: Next chord targets [T-1]
+            Common:
             - song_id: String identifier for the song
             - start_frame: Integer indicating the start frame
         """
@@ -239,10 +236,14 @@ def main():
         batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
                 for k, v in batch.items()}
         
-        print(f"Batch size: {len(batch['input_tokens'])}")
-        print(f"Input tokens shape: {batch['input_tokens'].shape}")
-        print(f"Target chord shape: {batch['target_chord'].shape}")
-        print(f"Device: {batch['input_tokens'].device}")
+        if mode == 'online':
+            print(f"Input tokens shape: {batch['input_tokens'].shape}")
+            print(f"Target chord shape: {batch['target_chord'].shape}")
+        else:  # offline mode
+            print(f"Melody tokens shape: {batch['melody_tokens'].shape}")
+            print(f"Chord input shape: {batch['chord_input'].shape}")
+            print(f"Chord target shape: {batch['chord_target'].shape}")
+        print(f"Device: {next(iter(batch.values())).device if isinstance(next(iter(batch.values())), torch.Tensor) else 'cpu'}")
 
 if __name__ == "__main__":
     main() 

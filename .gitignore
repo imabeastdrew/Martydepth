@@ -37,9 +37,15 @@ ENV/
 .ipynb_checkpoints
 
 # Data
+# Allow wandb API key and data
+!wandb_api_key.txt
+!data/interim/
+!data/interim/*
+
+# Ignore other data directories
 data/raw/
-data/interim/
 data/processed/
+data/external/
 
 # Logs and databases
 *.log
@@ -56,8 +62,16 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
-wandb_api_key.txt
+# Allow wandb API key and data
+!wandb_api_key.txt
+!data/interim/
+!data/interim/*
+
+# Ignore checkpoints
 checkpoints/
+*.pt
+*.pth
+*.ckpt
 
 # SLURM
 *.out
