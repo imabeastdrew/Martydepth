@@ -35,7 +35,7 @@ def train_epoch(model: nn.Module,
                 device: torch.device,
                 config: TrainingConfig,
                 metrics: MetricsTracker,
-                step: int) -> int:
+                global_step: int) -> int:
     """Standard autoregressive training"""
     model.train()
     metrics.start_epoch()
@@ -66,19 +66,19 @@ def train_epoch(model: nn.Module,
             model=model,
             loss=loss,
             optimizer=optimizer,
-            epoch=step // len(train_loader),
-            step=step
+            epoch=global_step // len(train_loader),
+            step=global_step
         )
         
-        step += 1
+        global_step += 1
     
-    return step
+    return global_step
 
 def validate(model: nn.Module,
             val_loader: DataLoader,
             device: torch.device,
             epoch: int,
-            step: int) -> float:
+            global_step: int) -> float:
     """Standard validation"""
     model.eval()
     total_loss = 0
@@ -97,7 +97,8 @@ def validate(model: nn.Module,
             num_batches += 1
     
     val_loss = total_loss / num_batches
-    log_validation_metrics(val_loss, epoch, step)
+    # Use the last step from training for validation metrics
+    log_validation_metrics(val_loss, epoch, global_step - 1)
     return val_loss
 
 def main():
@@ -193,20 +194,20 @@ def main():
     
     # Training loop
     print("\n Starting training...")
-    step = 0
+    global_step = 0
     best_val_loss = float('inf')
     
     for epoch in range(config.max_epochs):
         print(f"\nEpoch {epoch+1}/{config.max_epochs}")
         
         # Train
-        step = train_epoch(
+        global_step = train_epoch(
             model, train_loader, optimizer, scheduler,
-            device, config, metrics, step
+            device, config, metrics, global_step
         )
         
         # Validate
-        val_loss = validate(model, val_loader, device, epoch, step)
+        val_loss = validate(model, val_loader, device, epoch, global_step)
         print(f"  Validation loss: {val_loss:.4f}")
         
         # Save checkpoint if validation loss improved
