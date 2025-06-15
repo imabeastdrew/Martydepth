@@ -123,7 +123,7 @@ class OnlineTransformer(nn.Module):
         """Create causal mask to prevent attending to future tokens"""
         # Create upper triangular mask (1s above diagonal)
         mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1).bool()
-        # Invert mask (1s become 0s and vice versa)
+        # Invert mask (1s become 0s and vice versa) and convert to float
         return ~mask
         
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
@@ -139,9 +139,8 @@ class OnlineTransformer(nn.Module):
         """
         batch_size, seq_length = tokens.shape
         
-        # Create position indices and causal mask
+        # Create position indices
         positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
-        mask = self.create_causal_mask(seq_length).to(tokens.device)
         
         # Get embeddings
         token_embeds = self.token_embedding(tokens)
@@ -151,8 +150,8 @@ class OnlineTransformer(nn.Module):
         x = token_embeds + pos_embeds
         x = self.dropout(x)
         
-        # Apply transformer with causal mask
-        x = self.transformer(x, src_mask=mask)
+        # Apply transformer with causal masking
+        x = self.transformer(x, is_causal=True)  # Use built-in causal masking
         
         # Get predictions
         logits = self.output_head(x)
