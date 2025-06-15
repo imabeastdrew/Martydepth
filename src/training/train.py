@@ -112,6 +112,12 @@ def main():
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     args = parser.parse_args()
     
+    # Log GPU info
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"CUDA device: {torch.cuda.get_device_name()}")
+        print(f"CUDA device count: {torch.cuda.device_count()}")
+    
     # Create config
     config = TrainingConfig(
         data_dir=args.data_dir,

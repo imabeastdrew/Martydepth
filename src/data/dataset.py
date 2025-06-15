@@ -193,7 +193,7 @@ def create_dataloader(data_dir: Path,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
-        pin_memory=True  # Enable pin_memory for faster GPU transfer
+        pin_memory=torch.cuda.is_available()  # Only pin memory if GPU is available
     )
 
 def main():
