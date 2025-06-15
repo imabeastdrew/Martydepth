@@ -17,6 +17,7 @@ from src.models.online_transformer import OnlineTransformer
 from src.data.dataset import create_dataloader
 from src.training.config import TrainingConfig
 from src.training.utils.logging import init_wandb, log_model_artifact
+from src.training.utils.metrics import MetricsTracker, log_training_metrics, log_validation_metrics
 
 def get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps):
     """Create linear schedule with warmup"""
@@ -33,22 +34,25 @@ def train_epoch(model: nn.Module,
                 scheduler: torch.optim.lr_scheduler.LRScheduler,
                 device: torch.device,
                 config: TrainingConfig,
+                metrics: MetricsTracker,
                 step: int) -> int:
     """Standard autoregressive training"""
     model.train()
+    metrics.start_epoch()
     
     for batch in train_loader:
         # Move batch to device
-        input_tokens = batch['input_tokens'].to(device)    # [batch, seq_len]
-        target_tokens = batch['target_tokens'].to(device)  # [batch, seq_len]
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                for k, v in batch.items()}
         
-        # Forward pass - predict next token for ALL positions
-        logits = model(input_tokens)  # [batch, seq_len, vocab_size]
+        # Forward pass
+        logits = model(batch['input_tokens'])
         
-        # Standard language modeling loss
-        logits_flat = logits.view(-1, logits.size(-1))      # [batch*seq, vocab_size]
-        targets_flat = target_tokens.view(-1)               # [batch*seq]
-        loss = nn.functional.cross_entropy(logits_flat, targets_flat)
+        # Calculate loss
+        loss = nn.functional.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            batch['target_tokens'].view(-1)
+        )
         
         # Backward pass
         optimizer.zero_grad()
@@ -57,12 +61,14 @@ def train_epoch(model: nn.Module,
         optimizer.step()
         scheduler.step()
         
-        # Logging
-        if step % config.log_every_n_steps == 0:
-            wandb.log({
-                "train/loss": loss.item(),
-                "train/learning_rate": scheduler.get_last_lr()[0]
-            }, step=step)
+        # Log metrics
+        log_training_metrics(
+            model=model,
+            loss=loss,
+            optimizer=optimizer,
+            epoch=step // len(train_loader),
+            step=step
+        )
         
         step += 1
     
@@ -70,7 +76,9 @@ def train_epoch(model: nn.Module,
 
 def validate(model: nn.Module,
             val_loader: DataLoader,
-            device: torch.device) -> float:
+            device: torch.device,
+            epoch: int,
+            step: int) -> float:
     """Standard validation"""
     model.eval()
     total_loss = 0
@@ -78,16 +86,19 @@ def validate(model: nn.Module,
     
     with torch.no_grad():
         for batch in val_loader:
-            input_tokens = batch['input_tokens'].to(device)
-            target_tokens = batch['target_tokens'].to(device)
-            logits = model(input_tokens)
-            logits_flat = logits.view(-1, logits.size(-1))
-            targets_flat = target_tokens.view(-1)
-            loss = nn.functional.cross_entropy(logits_flat, targets_flat)
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                    for k, v in batch.items()}
+            logits = model(batch['input_tokens'])
+            loss = nn.functional.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                batch['target_tokens'].view(-1)
+            )
             total_loss += loss.item()
             num_batches += 1
     
-    return total_loss / num_batches
+    val_loss = total_loss / num_batches
+    log_validation_metrics(val_loss, epoch, step)
+    return val_loss
 
 def main():
     # Parse arguments
@@ -157,6 +168,9 @@ def main():
         num_training_steps=num_training_steps
     )
     
+    # Initialize metrics tracker
+    metrics = MetricsTracker()
+    
     # Training loop
     step = 0
     best_val_loss = float('inf')
@@ -165,12 +179,11 @@ def main():
         # Train
         step = train_epoch(
             model, train_loader, optimizer, scheduler,
-            device, config, step
+            device, config, metrics, step
         )
         
         # Validate
-        val_loss = validate(model, val_loader, device)
-        wandb.log({"val/loss": val_loss}, step=step)
+        val_loss = validate(model, val_loader, device, epoch, step)
         
         # Save checkpoint if validation loss improved
         if val_loss < best_val_loss:
@@ -180,6 +193,15 @@ def main():
                 f"model_epoch_{epoch}",
                 metadata={"val_loss": best_val_loss}
             )
+        
+        # Log epoch time
+        metrics.end_epoch(epoch)
+    
+    # Log final metrics
+    wandb.run.summary.update({
+        'final_epoch': config.max_epochs - 1,
+        'best_val_loss': best_val_loss
+    })
     
     # Cleanup
     run.finish()
