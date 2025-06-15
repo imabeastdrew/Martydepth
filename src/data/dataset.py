@@ -76,7 +76,7 @@ class FrameDataset(Dataset):
         # Set vocabulary sizes
         self.melody_vocab_size = self.tokenizer_info['melody_vocab_size']
         self.chord_vocab_size = self.tokenizer_info['chord_vocab_size']
-        self.total_vocab_size = self.tokenizer_info['total_vocab_size']
+        self.vocab_size = self.tokenizer_info['total_vocab_size']  # Expose total vocab size
         
     def _load_sequences(self) -> List[FrameSequence]:
         """Load sequences from pickle file"""
@@ -114,21 +114,20 @@ class FrameDataset(Dataset):
         return len(self.sequences)
     
     def _interleave_sequences(self, melody_tokens: np.ndarray, chord_tokens: np.ndarray) -> np.ndarray:
-        """Interleave melody and chord tokens"""
-        # Create interleaved sequence: [melody_0, chord_0, melody_1, chord_1, ...]
+        """Interleave melody and chord tokens in paper format: [chord_1, melody_1, chord_2, melody_2, ...]"""
+        # Create interleaved sequence: [chord_0, melody_0, chord_1, melody_1, ...]
         interleaved = np.empty(len(melody_tokens) * 2, dtype=melody_tokens.dtype)
-        interleaved[0::2] = melody_tokens  # Even indices: melody tokens
-        interleaved[1::2] = chord_tokens   # Odd indices: chord tokens
+        interleaved[1::2] = melody_tokens  # Odd indices: melody tokens
+        interleaved[0::2] = chord_tokens   # Even indices: chord tokens
         return interleaved
     
     def _get_online_format(self, sequence: FrameSequence) -> Dict[str, torch.Tensor]:
         """Standard autoregressive format (like GPT)"""
-        # Create full interleaved sequence
+        # Create full interleaved sequence in paper format: [chord_1, melody_1, chord_2, melody_2, ...]
         full_interleaved = self._interleave_sequences(
             sequence.melody_tokens,  # [T] - full sequence
             sequence.chord_tokens    # [T] - full sequence  
         )
-        # full_interleaved: [melody_0, chord_0, melody_1, chord_1, ..., melody_T, chord_T]
         
         # Standard autoregressive split
         input_tokens = torch.tensor(full_interleaved[:-1], dtype=torch.long)   # [0:2T-1]
@@ -251,7 +250,7 @@ def main():
         print(f"Vocabulary sizes:")
         print(f"  Melody tokens: {dataset.melody_vocab_size}")
         print(f"  Chord tokens: {dataset.chord_vocab_size}")
-        print(f"  Total tokens: {dataset.total_vocab_size}")
+        print(f"  Total tokens: {dataset.vocab_size}")
         
         # Test loading a batch and moving to device
         print("\nTesting batch loading...")
