@@ -6,3 +6,4 @@ wandb
 tqdm>=4.65.0
 pandas>=2.0.0
 pathlib>=1.0.1
+transformers

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from src.training.config import TrainingConfig
+from typing import Optional
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1):
@@ -73,118 +74,87 @@ class OnlineTransformer(nn.Module):
     """
     Transformer model for online chord prediction from interleaved melody-chord sequences.
     
-    Input format:
-    - Each frame contains [melody_t, chord_t] tokens
-    - At time t, model sees [melody_0, chord_0, ..., melody_{t-1}, chord_{t-1}]
-    - Must predict chord_t without seeing melody_t (online constraint)
+    Input format (as per paper):
+    - Single interleaved sequence [chord_1, melody_1, chord_2, melody_2, ...]
+    - At time t, model sees all tokens up to t-1
+    - Must predict next token given history
     
-    Sequence structure:
-    - Even indices (0,2,4,...): melody tokens
-    - Odd indices (1,3,5,...): chord tokens
-    
-    Vocabulary structure:
-    - Token IDs 0 to 256: melody tokens (MIDI)
-    - Token IDs 257 to 4832: chord tokens
+    Architecture:
+    - Embedding dimension: 512
+    - Number of heads: 8
+    - Head dimension: 64 (512/8)
+    - Number of layers: 8
+    - Feedforward dimension: 2048 (4 * embed_dim)
     """
     
     def __init__(self,
-                 config,
-                 vocab_size: int = None,
+                 vocab_size: int,
                  embed_dim: int = 512,
-                 num_layers: int = 8,
                  num_heads: int = 8,
-                 feedforward_dim: int = 2048,
-                 max_sequence_length: int = 512,
-                 dropout: float = 0.1):
+                 num_layers: int = 8,
+                 dropout: float = 0.1,
+                 max_seq_length: int = 512):
         super().__init__()
         
-        # If config is provided, use its values
-        if hasattr(config, 'vocab_size'):
-            vocab_size = config.vocab_size
-        if hasattr(config, 'embed_dim'):
-            embed_dim = config.embed_dim
-        if hasattr(config, 'num_layers'):
-            num_layers = config.num_layers
-        if hasattr(config, 'num_heads'):
-            num_heads = config.num_heads
-        if hasattr(config, 'feedforward_dim'):
-            feedforward_dim = config.feedforward_dim
-        if hasattr(config, 'max_sequence_length'):
-            max_sequence_length = config.max_sequence_length
-        if hasattr(config, 'dropout'):
-            dropout = config.dropout
-            
-        if vocab_size is None:
-            raise ValueError("vocab_size must be provided either directly or through config")
-            
         self.vocab_size = vocab_size
-        self.token_embeddings = nn.Embedding(vocab_size, embed_dim)
-        self.position_embeddings = nn.Embedding(max_sequence_length, embed_dim)
-        self.transformer_layers = nn.ModuleList([
-            TransformerBlock(embed_dim, num_heads, feedforward_dim, dropout)
-            for _ in range(num_layers)
-        ])
+        self.embed_dim = embed_dim
+        
+        # Single embedding table for all tokens
+        self.token_embedding = nn.Embedding(vocab_size, embed_dim)
+        self.position_embedding = nn.Embedding(max_seq_length, embed_dim)
+        
+        # Transformer layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=4 * embed_dim,  # 2048 for embed_dim=512
+            dropout=dropout,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Single output head for next token prediction
         self.output_head = nn.Linear(embed_dim, vocab_size)
+        
+        # Dropout
         self.dropout = nn.Dropout(dropout)
         
-        # Initialize weights
-        self.apply(self._init_weights)
-        
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.LayerNorm):
-            torch.nn.init.ones_(module.weight)
-            torch.nn.init.zeros_(module.bias)
-    
     def create_causal_mask(self, seq_length: int) -> torch.Tensor:
-        """Create a causal mask for the sequence"""
+        """Create causal mask to prevent attending to future tokens"""
+        # Create upper triangular mask (1s above diagonal)
         mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1).bool()
-        return ~mask  # Invert mask so True = can attend, False = cannot attend
-    
-    def forward(self, input_tokens: torch.Tensor) -> torch.Tensor:
+        # Invert mask (1s become 0s and vice versa)
+        return ~mask
+        
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass
+        Forward pass on interleaved sequence
         
         Args:
-            input_tokens: Combined melody and chord tokens [batch_size, seq_length]
-                         Even positions (0,2,4...) are melody tokens
-                         Odd positions (1,3,5...) are chord tokens
+            tokens: Interleaved chord/melody sequence [batch_size, seq_length]
+                   Format: [chord_1, melody_1, chord_2, melody_2, ...]
         
         Returns:
-            logits: Logits for all tokens in the vocabulary
-                     Shape: [batch_size, seq_length, vocab_size]
+            logits: Prediction logits for next token [batch_size, seq_length, vocab_size]
         """
-        batch_size, seq_length = input_tokens.shape
+        batch_size, seq_length = tokens.shape
         
-        # Check that sequence length does not exceed position embedding size
-        if seq_length > self.position_embeddings.num_embeddings:
-            raise ValueError(f"Input sequence length {seq_length} exceeds position embedding size {self.position_embeddings.num_embeddings}.")
-        
-        # Standard sequence position embeddings
-        position_indices = torch.arange(seq_length, device=input_tokens.device)
-        position_indices = position_indices.unsqueeze(0).expand(batch_size, -1)
+        # Create position indices and causal mask
+        positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
+        mask = self.create_causal_mask(seq_length).to(tokens.device)
         
         # Get embeddings
-        token_embeds = self.token_embeddings(input_tokens)
-        position_embeds = self.position_embeddings(position_indices)
+        token_embeds = self.token_embedding(tokens)
+        pos_embeds = self.position_embedding(positions)
         
         # Combine embeddings
-        x = token_embeds + position_embeds
+        x = token_embeds + pos_embeds
         x = self.dropout(x)
         
-        # Standard causal mask
-        mask = self.create_causal_mask(seq_length).to(x.device)
+        # Apply transformer with causal mask
+        x = self.transformer(x, src_mask=mask)
         
-        # Pass through transformer stack
-        for transformer_layer in self.transformer_layers:
-            x = transformer_layer(x, mask=mask)
-        
-        # Extract logits
+        # Get predictions
         logits = self.output_head(x)
         
         return logits
@@ -193,25 +163,19 @@ if __name__ == "__main__":
     # Test the model
     batch_size = 4
     seq_length = 256
+    vocab_size = 4834  # Combined vocabulary size
     
-    # Create dummy input with proper token ranges (MIDI-based)
-    melody_tokens = torch.randint(0, 257, (batch_size, seq_length//2))  # Melody tokens: 0-256
-    chord_tokens = torch.randint(257, 4833, (batch_size, seq_length//2))  # Chord tokens: 257-4832
-    
-    # Interleave melody and chord tokens
-    input_tokens = torch.stack([
-        torch.stack([m, c], dim=1).flatten() 
-        for m, c in zip(melody_tokens, chord_tokens)
-    ], dim=0)
+    # Create dummy interleaved sequence
+    tokens = torch.randint(0, vocab_size, (batch_size, seq_length))
     
     # Initialize model
-    model = OnlineTransformer()
+    model = OnlineTransformer(vocab_size=vocab_size)
     
     # Forward pass
-    logits = model(input_tokens)
+    logits = model(tokens)
     
     # Print shapes
-    print(f"Input shape: {input_tokens.shape}")
+    print(f"Input shape: {tokens.shape}")
     print(f"Output shape: {logits.shape}")
     
     # Count parameters
