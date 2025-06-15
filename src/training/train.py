@@ -181,7 +181,7 @@ def main():
     )
     
     # Initialize wandb
-    run = init_wandb(config)
+    run = init_wandb(config, name=f"online_transformer_{wandb.util.generate_id()}")
     
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
