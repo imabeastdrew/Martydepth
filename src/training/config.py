@@ -12,14 +12,13 @@ class TrainingConfig:
     batch_size: int = 32
     num_workers: int = 4
     
-    # Model parameters
-    vocab_size: int = 4833           # UPDATED: 257 + 4576
-    melody_vocab_size: int = 257     # UPDATED: MIDI vocab
-    embed_dim: int = 480  # Match model architecture
-    num_layers: int = 8   # Match model architecture
-    num_heads: int = 6    # Match model architecture
-    feedforward_dim: int = 1920  # 4 * embed_dim
-    sequence_length: int = 256
+    # Model parameters (autoregressive, paper spec)
+    vocab_size: Optional[int] = None  # Will be loaded from data
+    embed_dim: int = 512    # Paper spec
+    num_layers: int = 8     # Paper spec  
+    num_heads: int = 8      # Changed to be compatible with embed_dim
+    feedforward_dim: int = 2048  # 4 * embed_dim
+    max_sequence_length: int = 512  # For interleaved sequences
     dropout: float = 0.1
     
     # Training parameters
@@ -31,7 +30,7 @@ class TrainingConfig:
     log_every_n_steps: int = 100
     
     # Weights & Biases parameters
-    wandb_project: str = "Martydepth"
+    wandb_project: str = "martydepth"
     wandb_entity: Optional[str] = None
     checkpoint_dir: str = "checkpoints"
     
@@ -46,5 +45,7 @@ class TrainingConfig:
             "num_heads": self.num_heads,
             "dropout": self.dropout,
             "warmup_steps": self.warmup_steps,
-            "gradient_clip_val": self.gradient_clip_val
+            "gradient_clip_val": self.gradient_clip_val,
+            "max_sequence_length": self.max_sequence_length,
+            "vocab_size": self.vocab_size
         } 

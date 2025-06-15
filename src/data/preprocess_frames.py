@@ -15,7 +15,8 @@ import random
 # Token ID ranges
 MELODY_TOKEN_START = 0      # Melody tokens: 0-256 (257 tokens)
 CHORD_TOKEN_START = 257     # Chord tokens: 257-4832 (4576 tokens)
-SILENCE_TOKEN = 0           # Shared silence token
+SILENCE_TOKEN = 0           # Shared silence token for melody
+CHORD_SILENCE_TOKEN = CHORD_TOKEN_START  # 257, first chord token
 
 @dataclass
 class FrameSequence:
@@ -54,8 +55,8 @@ class ChordTokenizer:
     def __init__(self):
         self.chord_to_token = {}  # Maps (root, intervals, inversion) → (onset_token, hold_token)
         self.token_to_chord = {}  # Maps token_id → (root, intervals, inversion, is_onset)
-        self.next_token_id = CHORD_TOKEN_START
-        self.silence_token = SILENCE_TOKEN
+        self.next_token_id = CHORD_TOKEN_START + 1  # Start after chord silence (258)
+        self.silence_token = CHORD_SILENCE_TOKEN  # 257
         
     def _get_chord_key(self, root: int, intervals: List[int], inversion: int) -> Tuple[int, Tuple[int, ...], int]:
         """Create a consistent key for a chord, preserving interval order"""
@@ -78,10 +79,7 @@ class ChordTokenizer:
             hold_token = self.next_token_id + 1
             self.next_token_id += 2
             
-            # Ensure we don't exceed vocabulary size
-            if hold_token >= 4753:  # Total vocabulary size
-                raise ValueError("Chord vocabulary size exceeded")
-            
+            # No hardcoded vocab limit
             self.chord_to_token[chord_key] = (onset_token, hold_token)
             self.token_to_chord[onset_token] = (*chord_key, True)   # Add is_onset=True
             self.token_to_chord[hold_token] = (*chord_key, False)   # Add is_onset=False
@@ -203,38 +201,46 @@ class FramePreprocessor:
         
         # Initialize with silence tokens
         melody_tokens = [self.melody_tokenizer.silence_token] * total_frames
-        chord_tokens = [self.chord_tokenizer.silence_token] * total_frames
+        chord_tokens = [self.chord_tokenizer.silence_token] * total_frames  # Use chord silence token
         
-        # Convert melody notes to MIDI
+        # Convert melody notes to MIDI with range validation
         for note in song_data['annotations']['melody']:
             onset_frame = int(note['onset'] * 4)
             offset_frame = int(note['offset'] * 4)
             pitch_class = note['pitch_class']
             octave = note['octave']
-            midi_number = (octave + 1) * 12 + pitch_class  # Convert to MIDI
-            if midi_number < 0 or midi_number > 127:
-                print(f"Warning: MIDI number {midi_number} out of range, skipping")
+            midi_number = (octave + 1) * 12 + pitch_class
+            if midi_number < 0:
+                print(f"Warning: Note too low (pc={pitch_class}, oct={octave}, midi={midi_number}), skipping")
+                continue
+            if midi_number > 127:
+                print(f"Warning: Note too high (pc={pitch_class}, oct={octave}, midi={midi_number}), skipping")
                 continue
             onset_token, hold_token = self.melody_tokenizer.encode_midi_note(midi_number)
             if onset_frame < total_frames:
                 melody_tokens[onset_frame] = onset_token
                 for frame in range(onset_frame + 1, min(offset_frame, total_frames)):
                     melody_tokens[frame] = hold_token
-        # Chord processing stays the same
+        # Improved chord processing
         for chord in song_data['annotations']['harmony']:
             onset_frame = int(chord['onset'] * 4)
             offset_frame = int(chord['offset'] * 4)
             try:
-                root = chord['root_pitch_class']
-                intervals = chord['root_position_intervals']
+                root = chord.get('root_pitch_class')
+                intervals = chord.get('root_position_intervals', [])
                 inversion = chord.get('inversion', 0)
+                if root is None:
+                    continue
+                if not intervals or len(intervals) == 0:
+                    continue
+                if not isinstance(intervals, list):
+                    continue
                 onset_token, hold_token = self.chord_tokenizer.encode_chord(root, intervals, inversion)
                 if onset_frame < total_frames:
                     chord_tokens[onset_frame] = onset_token
                     for frame in range(onset_frame + 1, min(offset_frame, total_frames)):
                         chord_tokens[frame] = hold_token
-            except (KeyError, ValueError) as e:
-                print(f"Warning: Invalid chord in song: {e}")
+            except (KeyError, ValueError, TypeError) as e:
                 continue
         return melody_tokens, chord_tokens
     
@@ -294,6 +300,7 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
         'chord_to_token': {str(k): v for k, v in chord_tokenizer.chord_to_token.items()},
         'token_to_chord': {str(k): v for k, v in chord_tokenizer.token_to_chord.items()},
         'chord_vocab_size': chord_tokenizer.next_token_id - CHORD_TOKEN_START,
+        'chord_silence_token': CHORD_SILENCE_TOKEN,
         'note_to_token': {str(k): v for k, v in melody_tokenizer.note_to_token.items()},
         'token_to_note': {str(k): v for k, v in melody_tokenizer.token_to_note.items()},
         'melody_vocab_size': 257,  # Fixed size for MIDI

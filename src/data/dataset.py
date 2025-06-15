@@ -102,24 +102,21 @@ class FrameDataset(Dataset):
         return interleaved
     
     def _get_online_format(self, sequence: FrameSequence) -> Dict[str, torch.Tensor]:
-        """Get causal training format with interleaved sequences"""
-        # Convert numpy arrays to tensors (no device placement)
-        melody_tokens = torch.tensor(sequence.melody_tokens, dtype=torch.long)
-        chord_tokens = torch.tensor(sequence.chord_tokens, dtype=torch.long)
-        
-        # Create interleaved sequence
-        input_tokens = self._interleave_sequences(
-            sequence.melody_tokens[:-1],  # [0:T-1]
-            sequence.chord_tokens[:-1]    # [0:T-1]
+        """Standard autoregressive format (like GPT)"""
+        # Create full interleaved sequence
+        full_interleaved = self._interleave_sequences(
+            sequence.melody_tokens,  # [T] - full sequence
+            sequence.chord_tokens    # [T] - full sequence  
         )
-        input_tokens = torch.tensor(input_tokens, dtype=torch.long)
+        # full_interleaved: [melody_0, chord_0, melody_1, chord_1, ..., melody_T, chord_T]
         
-        # Target is next chord token
-        target_chord = torch.tensor(sequence.chord_tokens[1:], dtype=torch.long)
+        # Standard autoregressive split
+        input_tokens = torch.tensor(full_interleaved[:-1], dtype=torch.long)   # [0:2T-1]
+        target_tokens = torch.tensor(full_interleaved[1:], dtype=torch.long)   # [1:2T]
         
         return {
-            'input_tokens': input_tokens,  # [2*(T-1)]
-            'target_chord': target_chord,  # [T-1]
+            'input_tokens': input_tokens,    # [2T-1] - input sequence
+            'target_tokens': target_tokens,  # [2T-1] - next token targets
             'song_id': sequence.song_id,
             'start_frame': sequence.start_frame
         }
@@ -146,7 +143,7 @@ class FrameDataset(Dataset):
             Dictionary containing:
             For online mode:
             - input_tokens: Interleaved melody and chord tokens [2*(T-1)]
-            - target_chord: Target chord tokens [T-1]
+            - target_tokens: Next token targets [2*(T-1)]
             For offline mode:
             - melody_tokens: Full melody sequence [T]
             - chord_input: Causal chord input [T-1]
@@ -238,7 +235,7 @@ def main():
         
         if mode == 'online':
             print(f"Input tokens shape: {batch['input_tokens'].shape}")
-            print(f"Target chord shape: {batch['target_chord'].shape}")
+            print(f"Target tokens shape: {batch['target_tokens'].shape}")
         else:  # offline mode
             print(f"Melody tokens shape: {batch['melody_tokens'].shape}")
             print(f"Chord input shape: {batch['chord_input'].shape}")

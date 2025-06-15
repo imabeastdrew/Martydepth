@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
+from src.training.config import TrainingConfig
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1):
@@ -86,38 +88,44 @@ class OnlineTransformer(nn.Module):
     """
     
     def __init__(self,
-                 vocab_size: int = 4833,  # Total vocabulary size (257 + 4576)
-                 melody_vocab_size: int = 257,  # MIDI-based melody vocabulary
-                 embed_dim: int = 480,  # Match ReaLChords paper
-                 num_layers: int = 8,  # Match ReaLChords paper
-                 num_heads: int = 6,  # Match ReaLChords paper
-                 feedforward_dim: int = 1920,  # 4 * embed_dim
-                 max_sequence_length: int = 256,
+                 config,
+                 vocab_size: int = None,
+                 embed_dim: int = 512,
+                 num_layers: int = 8,
+                 num_heads: int = 8,
+                 feedforward_dim: int = 2048,
+                 max_sequence_length: int = 512,
                  dropout: float = 0.1):
         super().__init__()
         
-        # Store vocabulary sizes
+        # If config is provided, use its values
+        if hasattr(config, 'vocab_size'):
+            vocab_size = config.vocab_size
+        if hasattr(config, 'embed_dim'):
+            embed_dim = config.embed_dim
+        if hasattr(config, 'num_layers'):
+            num_layers = config.num_layers
+        if hasattr(config, 'num_heads'):
+            num_heads = config.num_heads
+        if hasattr(config, 'feedforward_dim'):
+            feedforward_dim = config.feedforward_dim
+        if hasattr(config, 'max_sequence_length'):
+            max_sequence_length = config.max_sequence_length
+        if hasattr(config, 'dropout'):
+            dropout = config.dropout
+            
+        if vocab_size is None:
+            raise ValueError("vocab_size must be provided either directly or through config")
+            
         self.vocab_size = vocab_size
-        self.melody_vocab_size = melody_vocab_size
-        self.chord_vocab_size = vocab_size - melody_vocab_size
-        
-        # Token embeddings for the combined vocabulary
         self.token_embeddings = nn.Embedding(vocab_size, embed_dim)
-        
-        # Position embeddings for the full sequence length
         self.position_embeddings = nn.Embedding(max_sequence_length, embed_dim)
-        
-        # Dropout for embeddings
-        self.dropout = nn.Dropout(dropout)
-        
-        # Transformer layers
         self.transformer_layers = nn.ModuleList([
             TransformerBlock(embed_dim, num_heads, feedforward_dim, dropout)
             for _ in range(num_layers)
         ])
-        
-        # Output head only for chord predictions (more efficient)
-        self.output_head = nn.Linear(embed_dim, self.chord_vocab_size)
+        self.output_head = nn.Linear(embed_dim, vocab_size)
+        self.dropout = nn.Dropout(dropout)
         
         # Initialize weights
         self.apply(self._init_weights)
@@ -148,28 +156,14 @@ class OnlineTransformer(nn.Module):
                          Odd positions (1,3,5...) are chord tokens
         
         Returns:
-            chord_logits: Logits for chord predictions at odd positions
-                         Shape: [batch_size, seq_length//2, chord_vocab_size]
+            logits: Logits for all tokens in the vocabulary
+                     Shape: [batch_size, seq_length, vocab_size]
         """
         batch_size, seq_length = input_tokens.shape
         
-        # Create position masks (not token value masks)
-        position_mask = torch.arange(seq_length, device=input_tokens.device) % 2
-        melody_positions = (position_mask == 0)  # Even positions
-        chord_positions = (position_mask == 1)   # Odd positions
-        
-        # Check melody tokens are in valid range at melody positions
-        if torch.any((input_tokens[:, melody_positions] >= self.melody_vocab_size)):
-            raise ValueError("Melody tokens must be in range [0, 257)")
-        
-        # Check chord tokens are in valid range at chord positions
-        if torch.any((input_tokens[:, chord_positions] < self.melody_vocab_size) | 
-                    (input_tokens[:, chord_positions] >= self.vocab_size)):
-            print("Chord token min:", input_tokens[:, chord_positions].min().item())
-            print("Chord token max:", input_tokens[:, chord_positions].max().item())
-            print("Chord token unique values (first batch):", input_tokens[0, chord_positions].unique().tolist())
-            print("Expected range: [{} - {})".format(self.melody_vocab_size, self.vocab_size))
-            raise ValueError("Chord tokens must be in range [melody_vocab_size, vocab_size)")
+        # Check that sequence length does not exceed position embedding size
+        if seq_length > self.position_embeddings.num_embeddings:
+            raise ValueError(f"Input sequence length {seq_length} exceeds position embedding size {self.position_embeddings.num_embeddings}.")
         
         # Standard sequence position embeddings
         position_indices = torch.arange(seq_length, device=input_tokens.device)
@@ -190,11 +184,10 @@ class OnlineTransformer(nn.Module):
         for transformer_layer in self.transformer_layers:
             x = transformer_layer(x, mask=mask)
         
-        # Extract chord positions and predict
-        chord_embeds = x[:, 1::2, :]  # Odd positions = chord positions
-        chord_logits = self.output_head(chord_embeds)  # Only chord vocabulary size
+        # Extract logits
+        logits = self.output_head(x)
         
-        return chord_logits
+        return logits
 
 if __name__ == "__main__":
     # Test the model
@@ -215,11 +208,11 @@ if __name__ == "__main__":
     model = OnlineTransformer()
     
     # Forward pass
-    chord_logits = model(input_tokens)
+    logits = model(input_tokens)
     
     # Print shapes
     print(f"Input shape: {input_tokens.shape}")
-    print(f"Output shape: {chord_logits.shape}")
+    print(f"Output shape: {logits.shape}")
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())

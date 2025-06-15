@@ -151,6 +151,7 @@ def main():
         split="train",
         batch_size=config.batch_size,
         num_workers=config.num_workers,
+        sequence_length=config.max_sequence_length,
         mode="offline"  # Use offline mode for teacher model
     )
     
@@ -159,21 +160,15 @@ def main():
         split="valid",
         batch_size=config.batch_size,
         num_workers=config.num_workers,
+        sequence_length=config.max_sequence_length,
         mode="offline"  # Use offline mode for teacher model
     )
     
+    # Set vocab size from dataset
+    config.vocab_size = train_loader.dataset.total_vocab_size
+
     # Create model
-    model = OfflineTeacherModel(
-        melody_vocab_size=config.melody_vocab_size,
-        chord_vocab_size=config.chord_vocab_size,
-        embed_dim=config.embed_dim,
-        num_encoder_layers=config.num_layers,
-        num_decoder_layers=config.num_layers,
-        num_heads=config.num_heads,
-        feedforward_dim=config.feedforward_dim,
-        max_sequence_length=config.sequence_length,
-        dropout=config.dropout
-    ).to(device)
+    model = OfflineTeacherModel(config).to(device)
     
     # Create optimizer and scheduler
     optimizer = AdamW(

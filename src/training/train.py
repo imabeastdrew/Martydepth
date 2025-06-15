@@ -34,31 +34,30 @@ def train_epoch(model: nn.Module,
                 device: torch.device,
                 config: TrainingConfig,
                 step: int) -> int:
-    """Train for one epoch"""
+    """Standard autoregressive training"""
     model.train()
     
     for batch in train_loader:
         # Move batch to device
-        input_tokens = batch['input_tokens'].to(device)
-        target_chords = batch['target_chord'].to(device)
+        input_tokens = batch['input_tokens'].to(device)    # [batch, seq_len]
+        target_tokens = batch['target_tokens'].to(device)  # [batch, seq_len]
         
-        # Forward pass
-        chord_logits = model(input_tokens)
+        # Forward pass - predict next token for ALL positions
+        logits = model(input_tokens)  # [batch, seq_len, vocab_size]
         
-        # Compute loss
-        loss = nn.functional.cross_entropy(chord_logits, target_chords)
+        # Standard language modeling loss
+        logits_flat = logits.view(-1, logits.size(-1))      # [batch*seq, vocab_size]
+        targets_flat = target_tokens.view(-1)               # [batch*seq]
+        loss = nn.functional.cross_entropy(logits_flat, targets_flat)
         
         # Backward pass
         optimizer.zero_grad()
         loss.backward()
-        
-        # Gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip_val)
-        
         optimizer.step()
         scheduler.step()
         
-        # Log metrics
+        # Logging
         if step % config.log_every_n_steps == 0:
             wandb.log({
                 "train/loss": loss.item(),
@@ -72,24 +71,19 @@ def train_epoch(model: nn.Module,
 def validate(model: nn.Module,
             val_loader: DataLoader,
             device: torch.device) -> float:
-    """Validate model"""
+    """Standard validation"""
     model.eval()
     total_loss = 0
     num_batches = 0
     
     with torch.no_grad():
         for batch in val_loader:
-            # Move batch to device
             input_tokens = batch['input_tokens'].to(device)
-            target_chords = batch['target_chord'].to(device)
-            
-            # Forward pass
-            chord_logits = model(input_tokens)
-            
-            # Compute loss
-            loss = nn.functional.cross_entropy(chord_logits, target_chords)
-            
-            # Update metrics
+            target_tokens = batch['target_tokens'].to(device)
+            logits = model(input_tokens)
+            logits_flat = logits.view(-1, logits.size(-1))
+            targets_flat = target_tokens.view(-1)
+            loss = nn.functional.cross_entropy(logits_flat, targets_flat)
             total_loss += loss.item()
             num_batches += 1
     
@@ -102,7 +96,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--max_epochs", type=int, default=100)
-    parser.add_argument("--wandb_project", type=str, default="realchords")
+    parser.add_argument("--wandb_project", type=str, default="martydepth")
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     args = parser.parse_args()
@@ -119,7 +113,7 @@ def main():
     )
     
     # Initialize wandb
-    run = init_wandb(config, name=f"realchords_{wandb.util.generate_id()}")
+    run = init_wandb(config, name=f"online_transformer_{wandb.util.generate_id()}")
     
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -130,6 +124,7 @@ def main():
         split="train",
         batch_size=config.batch_size,
         num_workers=config.num_workers,
+        sequence_length=config.max_sequence_length,
         mode="online"
     )
     
@@ -138,20 +133,15 @@ def main():
         split="valid",
         batch_size=config.batch_size,
         num_workers=config.num_workers,
+        sequence_length=config.max_sequence_length,
         mode="online"
     )
     
+    # Set vocab_size dynamically from train dataset
+    config.vocab_size = train_loader.dataset.total_vocab_size
+
     # Create model
-    model = OnlineTransformer(
-        vocab_size=config.vocab_size,
-        melody_vocab_size=config.melody_vocab_size,
-        embed_dim=config.embed_dim,
-        num_layers=config.num_layers,
-        num_heads=config.num_heads,
-        feedforward_dim=config.feedforward_dim,
-        max_sequence_length=config.sequence_length,
-        dropout=config.dropout
-    ).to(device)
+    model = OnlineTransformer(config).to(device)
     
     # Create optimizer and scheduler
     optimizer = AdamW(

@@ -178,56 +178,51 @@ class OfflineTeacherModel(nn.Module):
     Symmetric 4+4 architecture matching ReaLChords paper
     """
     
-    def __init__(self, 
-                 melody_vocab_size=177,
-                 chord_vocab_size=7969,
-                 embed_dim=512,           # Match paper's 512-dim
-                 num_encoder_layers=4,    # Symmetric design
-                 num_decoder_layers=4,
-                 num_heads=6,
-                 feedforward_dim=2048,    # 4x embed_dim
-                 max_sequence_length=256,
-                 dropout=0.1):
+    def __init__(self, config: TrainingConfig):
         super().__init__()
+        if config.vocab_size is None:
+            raise ValueError("vocab_size must be set in TrainingConfig before model initialization.")
+        if config.chord_vocab_size is None:
+            raise ValueError("chord_vocab_size must be set in TrainingConfig before model initialization.")
         
         # Store configuration
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.max_sequence_length = max_sequence_length
+        self.embed_dim = config.embed_dim
+        self.num_heads = config.num_heads
+        self.max_sequence_length = config.sequence_length
         
         # Embeddings
         self.embeddings = OfflineTeacherEmbeddings(
-            melody_vocab_size, chord_vocab_size, embed_dim, max_sequence_length
+            config.melody_vocab_size, config.chord_vocab_size, config.embed_dim, config.sequence_length
         )
         
         # Encoder: 4 layers using standard transformer blocks
         self.encoder_layers = nn.ModuleList([
             nn.TransformerEncoderLayer(
-                d_model=embed_dim,
-                nhead=num_heads,
-                dim_feedforward=feedforward_dim,
-                dropout=dropout,
+                d_model=config.embed_dim,
+                nhead=config.num_heads,
+                dim_feedforward=config.feedforward_dim,
+                dropout=config.dropout,
                 batch_first=True
             )
-            for _ in range(num_encoder_layers)
+            for _ in range(config.num_layers)
         ])
         
         # Decoder: 4 layers with cross-attention
         self.decoder_layers = nn.ModuleList([
-            DecoderBlock(embed_dim, num_heads, feedforward_dim, dropout)
-            for _ in range(num_decoder_layers)
+            DecoderBlock(config.embed_dim, config.num_heads, config.feedforward_dim, config.dropout)
+            for _ in range(config.num_layers)
         ])
         
         # Output projection to chord vocabulary
-        self.output_head = nn.Linear(embed_dim, chord_vocab_size)
+        self.output_head = nn.Linear(config.embed_dim, config.chord_vocab_size)
         
         # Dropout
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(config.dropout)
         
         print(f"🎵 Offline Teacher Model Initialized:")
-        print(f"  Architecture: {num_encoder_layers}E + {num_decoder_layers}D")
-        print(f"  Embed dimension: {embed_dim}")
-        print(f"  Attention heads: {num_heads}")
+        print(f"  Architecture: {config.num_layers}E + {config.num_layers}D")
+        print(f"  Embed dimension: {config.embed_dim}")
+        print(f"  Attention heads: {config.num_heads}")
         print(f"  Total parameters: {self.count_parameters():,}")
     
     def count_parameters(self):
