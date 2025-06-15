@@ -80,14 +80,34 @@ class FrameDataset(Dataset):
         
     def _load_sequences(self) -> List[FrameSequence]:
         """Load sequences from pickle file"""
-        with open(self.data_dir / self.split / f'frame_sequences_{self.split}.pkl', 'rb') as f:
+        sequence_file = self.data_dir / self.split / f'frame_sequences_{self.split}.pkl'
+        if not sequence_file.exists():
+            raise FileNotFoundError(
+                f"Sequence file not found: {sequence_file}\n"
+                f"Please run preprocessing to generate {self.split} sequences first."
+            )
+        
+        print(f"Loading {self.split} sequences from {sequence_file}")
+        with open(sequence_file, 'rb') as f:
             sequence_dicts = pickle.load(f)
-        return [FrameSequence.from_dict(d) for d in sequence_dicts]
+        sequences = [FrameSequence.from_dict(d) for d in sequence_dicts]
+        print(f"Loaded {len(sequences)} sequences")
+        return sequences
     
     def _load_tokenizer_info(self) -> Dict:
         """Load tokenizer information"""
-        with open(self.data_dir / self.split / 'tokenizer_info.json', 'r') as f:
-            return json.load(f)
+        tokenizer_file = self.data_dir / self.split / 'tokenizer_info.json'
+        if not tokenizer_file.exists():
+            raise FileNotFoundError(
+                f"Tokenizer info not found: {tokenizer_file}\n"
+                f"Please run preprocessing to generate tokenizer info first."
+            )
+        
+        print(f"Loading tokenizer info from {tokenizer_file}")
+        with open(tokenizer_file, 'r') as f:
+            info = json.load(f)
+        print(f"Loaded tokenizer info with {info['total_vocab_size']} total tokens")
+        return info
     
     def __len__(self) -> int:
         """Return the number of sequences in the dataset"""
@@ -181,6 +201,13 @@ def create_dataloader(data_dir: Path,
     Returns:
         DataLoader for the specified split
     """
+    print(f"\n Creating {split} dataloader:")
+    print(f"  Data directory: {data_dir}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  Num workers: {num_workers}")
+    print(f"  Sequence length: {sequence_length}")
+    print(f"  Mode: {mode}")
+    
     dataset = FrameDataset(
         data_dir=data_dir,
         split=split,
@@ -193,7 +220,7 @@ def create_dataloader(data_dir: Path,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
-        pin_memory=torch.cuda.is_available()  # Only pin memory if GPU is available
+        pin_memory=torch.cuda.is_available()
     )
 
 def main():

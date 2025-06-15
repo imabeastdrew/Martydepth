@@ -112,11 +112,14 @@ def main():
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     args = parser.parse_args()
     
-    # Log GPU info
-    print(f"CUDA available: {torch.cuda.is_available()}")
+    # Log system info
+    print("\n System Info:")
+    print(f"  PyTorch version: {torch.__version__}")
+    print(f"  CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
-        print(f"CUDA device: {torch.cuda.get_device_name()}")
-        print(f"CUDA device count: {torch.cuda.device_count()}")
+        print(f"  CUDA version: {torch.version.cuda}")
+        print(f"  GPU: {torch.cuda.get_device_name()}")
+        print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     
     # Create config
     config = TrainingConfig(
@@ -130,12 +133,15 @@ def main():
     )
     
     # Initialize wandb
+    print("\n Initializing W&B...")
     run = init_wandb(config, name=f"online_transformer_{wandb.util.generate_id()}")
     
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\n Using device: {device}")
     
     # Create dataloaders
+    print("\n Creating dataloaders...")
     train_loader = create_dataloader(
         data_dir=Path(config.data_dir),
         split="train",
@@ -156,9 +162,17 @@ def main():
     
     # Set vocab_size dynamically from train dataset
     config.vocab_size = train_loader.dataset.total_vocab_size
+    print(f"\n Dataset Info:")
+    print(f"  Train sequences: {len(train_loader.dataset)}")
+    print(f"  Val sequences: {len(val_loader.dataset)}")
+    print(f"  Vocab size: {config.vocab_size}")
+    print(f"  Batch size: {config.batch_size}")
+    print(f"  Steps per epoch: {len(train_loader)}")
 
     # Create model
+    print("\n Creating model...")
     model = OnlineTransformer(config).to(device)
+    print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Create optimizer and scheduler
     optimizer = AdamW(
@@ -178,10 +192,13 @@ def main():
     metrics = MetricsTracker()
     
     # Training loop
+    print("\n Starting training...")
     step = 0
     best_val_loss = float('inf')
     
     for epoch in range(config.max_epochs):
+        print(f"\nEpoch {epoch+1}/{config.max_epochs}")
+        
         # Train
         step = train_epoch(
             model, train_loader, optimizer, scheduler,
@@ -190,10 +207,12 @@ def main():
         
         # Validate
         val_loss = validate(model, val_loader, device, epoch, step)
+        print(f"  Validation loss: {val_loss:.4f}")
         
         # Save checkpoint if validation loss improved
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            print(f"  New best validation loss! Saving checkpoint...")
             log_model_artifact(
                 model,
                 f"model_epoch_{epoch}",
@@ -204,6 +223,8 @@ def main():
         metrics.end_epoch(epoch)
     
     # Log final metrics
+    print("\n Training complete!")
+    print(f"  Best validation loss: {best_val_loss:.4f}")
     wandb.run.summary.update({
         'final_epoch': config.max_epochs - 1,
         'best_val_loss': best_val_loss
