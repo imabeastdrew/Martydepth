@@ -165,7 +165,11 @@ class OnlineTransformer(nn.Module):
         # Check chord tokens are in valid range at chord positions
         if torch.any((input_tokens[:, chord_positions] < self.melody_vocab_size) | 
                     (input_tokens[:, chord_positions] >= self.vocab_size)):
-            raise ValueError("Chord tokens must be in range [257, 4833)")
+            print("Chord token min:", input_tokens[:, chord_positions].min().item())
+            print("Chord token max:", input_tokens[:, chord_positions].max().item())
+            print("Chord token unique values (first batch):", input_tokens[0, chord_positions].unique().tolist())
+            print("Expected range: [{} - {})".format(self.melody_vocab_size, self.vocab_size))
+            raise ValueError("Chord tokens must be in range [melody_vocab_size, vocab_size)")
         
         # Standard sequence position embeddings
         position_indices = torch.arange(seq_length, device=input_tokens.device)
