@@ -139,8 +139,9 @@ class OnlineTransformer(nn.Module):
         """
         batch_size, seq_length = tokens.shape
         
-        # Create position indices
+        # Create position indices and causal mask
         positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
+        mask = nn.Transformer.generate_square_subsequent_mask(seq_length).to(tokens.device)
         
         # Get embeddings
         token_embeds = self.token_embedding(tokens)
@@ -151,7 +152,7 @@ class OnlineTransformer(nn.Module):
         x = self.dropout(x)
         
         # Apply transformer with causal masking
-        x = self.transformer(x, is_causal=True)  # Use built-in causal masking
+        x = self.transformer(x, mask=mask)
         
         # Get predictions
         logits = self.output_head(x)
