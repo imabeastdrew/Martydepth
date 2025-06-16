@@ -150,7 +150,7 @@ def main(config: TrainingConfig):
     
     dataset_info = train_loader.dataset.tokenizer_info
     config.melody_vocab_size = dataset_info['melody_vocab_size']
-    config.chord_vocab_size = dataset_info['chord_vocab_size']
+    config.chord_vocab_size = dataset_info['chord_vocab_size'] + 1
 
     model = OfflineTeacherModel(
         melody_vocab_size=config.melody_vocab_size,
