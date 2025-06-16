@@ -5,71 +5,6 @@ import math
 from src.training.config import TrainingConfig
 from typing import Optional
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
-        
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
-        batch_size, seq_length, _ = x.shape
-        
-        # Project queries, keys, values
-        q = self.q_proj(x).view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
-        
-        # Compute attention scores
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        
-        # Apply mask if provided
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-        
-        # Apply softmax and dropout
-        attn_weights = torch.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        
-        # Compute output
-        output = torch.matmul(attn_weights, v)
-        output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, self.embed_dim)
-        output = self.out_proj(output)
-        
-        return output
-
-class TransformerBlock(nn.Module):
-    def __init__(self, embed_dim: int, num_heads: int, feedforward_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.attention = MultiHeadAttention(embed_dim, num_heads, dropout)
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
-        self.feedforward = nn.Sequential(
-            nn.Linear(embed_dim, feedforward_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(feedforward_dim, embed_dim),
-            nn.Dropout(dropout)
-        )
-        
-    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
-        # Self-attention with residual connection and layer norm
-        attn_output = self.attention(self.norm1(x), mask)
-        x = x + attn_output
-        
-        # Feedforward with residual connection and layer norm
-        ff_output = self.feedforward(self.norm2(x))
-        x = x + ff_output
-        
-        return x
-
 class OnlineTransformer(nn.Module):
     """
     Transformer model for online chord prediction from interleaved melody-chord sequences.
@@ -122,9 +57,9 @@ class OnlineTransformer(nn.Module):
     def create_causal_mask(self, seq_length: int) -> torch.Tensor:
         """Create causal mask to prevent attending to future tokens"""
         # Create upper triangular mask (1s above diagonal)
-        mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1).bool()
+        mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1)
         # Invert mask (1s become 0s and vice versa) and convert to float
-        return ~mask
+        return mask.masked_fill(mask == 1, float('-inf'))
         
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         """
@@ -141,7 +76,7 @@ class OnlineTransformer(nn.Module):
         
         # Create position indices and causal mask
         positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
-        mask = nn.Transformer.generate_square_subsequent_mask(seq_length).to(tokens.device)
+        mask = self.create_causal_mask(seq_length).to(tokens.device)
         
         # Get embeddings
         token_embeds = self.token_embedding(tokens)

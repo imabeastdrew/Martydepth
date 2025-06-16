@@ -17,7 +17,7 @@ from src.models.online_transformer import OnlineTransformer
 from src.data.dataset import create_dataloader
 from src.training.config import TrainingConfig
 from src.training.utils.logging import init_wandb, log_model_artifact
-from src.training.utils.metrics import MetricsTracker, log_training_metrics, log_validation_metrics
+from src.training.utils.metrics import log_training_metrics, log_validation_metrics
 
 def get_warmup_schedule(optimizer, num_warmup_steps):
     """Create warmup schedule"""
@@ -43,14 +43,14 @@ def train_step(model: nn.Module,
     
     # Calculate loss (predict next token)
     loss = nn.functional.cross_entropy(
-        logits[:, :-1].reshape(-1, model.vocab_size),
-        batch['target_tokens'][:, 1:].reshape(-1)
+        logits.reshape(-1, model.vocab_size),
+        batch['target_tokens'].reshape(-1)
     )
     
     # Backward pass
     optimizer.zero_grad()
     loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.gradient_clip_val)
     optimizer.step()
     scheduler.step()
     
@@ -65,7 +65,6 @@ def train(model: nn.Module,
           config: TrainingConfig):
     """Training loop with step-based training and validation"""
     model.train()
-    metrics = MetricsTracker()
     
     global_step = 0
     best_val_loss = float('inf')
@@ -87,10 +86,10 @@ def train(model: nn.Module,
             train_iter = iter(train_loader)
             batch = next(train_iter)
             current_epoch += 1
-            metrics.end_epoch(current_epoch)
             
             # Validate at epoch boundaries
             val_loss = validate(model, val_loader, device)
+            log_validation_metrics(loss=val_loss, epoch=current_epoch, step=global_step)
             print(f"\nEpoch {current_epoch} Validation:")
             print(f"  Loss: {val_loss:.4f}")
             
@@ -147,39 +146,18 @@ def validate(model: nn.Module,
             
             logits = model(batch['input_tokens'])
             loss = nn.functional.cross_entropy(
-                logits[:, :-1].reshape(-1, model.vocab_size),
-                batch['target_tokens'][:, 1:].reshape(-1)
+                logits.reshape(-1, model.vocab_size),
+                batch['target_tokens'].reshape(-1)
             )
             
-            total_loss += loss.item()
+            total_loss += loss.item()  # Convert to float here
             num_batches += 1
     
-    return total_loss / num_batches
+    avg_loss = total_loss / num_batches
+    return avg_loss
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default="data/interim")
-    parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--learning_rate", type=float, default=1e-3)
-    parser.add_argument("--total_steps", type=int, default=50000)
-    parser.add_argument("--warmup_steps", type=int, default=1000)
-    parser.add_argument("--wandb_project", type=str, default="martydepth")
-    parser.add_argument("--wandb_entity", type=str, default=None)
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
-    args = parser.parse_args()
-    
-    # Create config
-    config = TrainingConfig(
-        data_dir=args.data_dir,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        total_steps=args.total_steps,
-        warmup_steps=args.warmup_steps,
-        wandb_project=args.wandb_project,
-        wandb_entity=args.wandb_entity,
-        checkpoint_dir=args.checkpoint_dir
-    )
-    
+def main(config: TrainingConfig):
+    """Main entry point for training."""
     # Initialize wandb
     run = init_wandb(config, name=f"online_transformer_{wandb.util.generate_id()}")
     
@@ -191,24 +169,34 @@ def main():
         data_dir=Path(config.data_dir),
         split="train",
         batch_size=config.batch_size,
-        num_workers=config.num_workers
+        num_workers=config.num_workers,
+        sequence_length=config.max_sequence_length,
+        mode='online'
     )
     
     val_loader = create_dataloader(
         data_dir=Path(config.data_dir),
         split="valid",
         batch_size=config.batch_size,
-        num_workers=config.num_workers
+        num_workers=config.num_workers,
+        sequence_length=config.max_sequence_length,
+        mode='online'
     )
     
+    # Update config with vocab sizes from the dataset
+    dataset_info = train_loader.dataset.tokenizer_info
+    config.vocab_size = dataset_info['total_vocab_size']
+    config.melody_vocab_size = dataset_info['melody_vocab_size']
+    config.chord_vocab_size = dataset_info['chord_vocab_size']
+
     # Create model
     model = OnlineTransformer(
-        vocab_size=train_loader.dataset.vocab_size,
-        embed_dim=512,
-        num_heads=8,
-        num_layers=8,
-        dropout=0.1,
-        max_seq_length=512
+        vocab_size=config.vocab_size,
+        embed_dim=config.embed_dim,
+        num_heads=config.num_heads,
+        num_layers=config.num_layers,
+        dropout=config.dropout,
+        max_seq_length=config.max_sequence_length
     ).to(device)
     
     # Create optimizer and scheduler
@@ -239,4 +227,14 @@ def main():
     run.finish()
 
 if __name__ == "__main__":
-    main() 
+    # This is a basic example of how to run training.
+    # For more complex configurations, you might use a tool like jsonargparse
+    # to directly instantiate the TrainingConfig from a YAML file or command line.
+    config = TrainingConfig(
+        data_dir="data/interim",
+        batch_size=32, # Smaller batch size for local testing
+        total_steps=10000,
+        warmup_steps=500,
+        learning_rate=1e-4,
+    )
+    main(config) 

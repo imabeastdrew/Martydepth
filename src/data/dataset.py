@@ -12,38 +12,7 @@ from torch.utils.data import Dataset
 import numpy as np
 from dataclasses import dataclass
 
-@dataclass
-class FrameSequence:
-    """Container for a sequence of chord frames"""
-    melody_tokens: np.ndarray  # Shape: (sequence_length,)
-    chord_tokens: np.ndarray   # Shape: (sequence_length,)
-    key_context: np.ndarray    # Shape: (sequence_length,)
-    meter_context: np.ndarray  # Shape: (sequence_length,)
-    song_id: str
-    start_frame: int
-    
-    def to_dict(self) -> Dict:
-        """Convert to dictionary for serialization"""
-        return {
-            'melody_tokens': self.melody_tokens,
-            'chord_tokens': self.chord_tokens,
-            'key_context': self.key_context,
-            'meter_context': self.meter_context,
-            'song_id': self.song_id,
-            'start_frame': self.start_frame
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict) -> 'FrameSequence':
-        """Create from dictionary after deserialization"""
-        return cls(
-            melody_tokens=data['melody_tokens'],
-            chord_tokens=data['chord_tokens'],
-            key_context=data['key_context'],
-            meter_context=data['meter_context'],
-            song_id=data['song_id'],
-            start_frame=data['start_frame']
-        )
+from src.data.datastructures import FrameSequence
 
 class FrameDataset(Dataset):
     """PyTorch Dataset for loading frame sequences"""
@@ -79,8 +48,8 @@ class FrameDataset(Dataset):
         self.vocab_size = self.tokenizer_info['total_vocab_size']  # Expose total vocab size
         
     def _load_sequences(self) -> List[FrameSequence]:
-        """Load sequences from pickle file"""
-        sequence_file = self.data_dir / self.split / f'frame_sequences_{self.split}.pkl'
+        """Load sequences from a compressed npz file."""
+        sequence_file = self.data_dir / self.split / f'frame_sequences_{self.split}.npz'
         if not sequence_file.exists():
             raise FileNotFoundError(
                 f"Sequence file not found: {sequence_file}\n"
@@ -88,9 +57,23 @@ class FrameDataset(Dataset):
             )
         
         print(f"Loading {self.split} sequences from {sequence_file}")
-        with open(sequence_file, 'rb') as f:
-            sequence_dicts = pickle.load(f)
-        sequences = [FrameSequence.from_dict(d) for d in sequence_dicts]
+        
+        # Load the entire dataset from the .npz file
+        data = np.load(sequence_file, allow_pickle=True)
+        
+        # Reconstruct the list of FrameSequence objects
+        num_sequences = len(data['song_id'])
+        sequences = []
+        for i in range(num_sequences):
+            sequences.append(FrameSequence(
+                melody_tokens=data['melody_tokens'][i],
+                chord_tokens=data['chord_tokens'][i],
+                key_context=data['key_context'][i],
+                meter_context=data['meter_context'][i],
+                song_id=str(data['song_id'][i]),  # Ensure song_id is a string
+                start_frame=int(data['start_frame'][i])
+            ))
+            
         print(f"Loaded {len(sequences)} sequences")
         return sequences
     
@@ -122,7 +105,7 @@ class FrameDataset(Dataset):
         return interleaved
     
     def _get_online_format(self, sequence: FrameSequence) -> Dict[str, torch.Tensor]:
-        """Standard autoregressive format (like GPT)"""
+        """Standard autoregressive format"""
         # Create full interleaved sequence in paper format: [chord_1, melody_1, chord_2, melody_2, ...]
         full_interleaved = self._interleave_sequences(
             sequence.melody_tokens,  # [T] - full sequence
@@ -236,9 +219,10 @@ def main():
         print(f"\nTesting {mode} mode...")
         dataloader = create_dataloader(
             data_dir=data_dir,
-            split='train',
+            split='valid', # Use smaller validation split for local testing
             batch_size=4,
             shuffle=True,
+            num_workers=0, # Use 0 for local testing to avoid memory issues
             mode=mode
         )
         

@@ -12,54 +12,33 @@ from dataclasses import dataclass
 from collections import defaultdict
 import random
 
+from src.config.tokenization_config import (
+    SILENCE_TOKEN,
+    CHORD_TOKEN_START,
+    CHORD_SILENCE_TOKEN,
+    CHORD_ONSET_HOLD_START,
+    MIDI_ONSET_START,
+    MIDI_HOLD_START,
+    MAX_MIDI_NOTE,
+    MELODY_VOCAB_SIZE,
+)
+from src.data.datastructures import FrameSequence
+
 # Token ID ranges
 MELODY_TOKEN_START = 0      # Melody tokens: 0-256 (257 tokens)
 CHORD_TOKEN_START = 257     # Chord tokens: 257-4832 (4576 tokens)
 SILENCE_TOKEN = 0           # Shared silence token for melody
 CHORD_SILENCE_TOKEN = CHORD_TOKEN_START  # 257, first chord token
 
-@dataclass
-class FrameSequence:
-    """Container for a sequence of chord frames"""
-    melody_tokens: np.ndarray  # Shape: (sequence_length,)
-    chord_tokens: np.ndarray   # Shape: (sequence_length,)
-    key_context: np.ndarray    # Shape: (sequence_length,)
-    meter_context: np.ndarray  # Shape: (sequence_length,)
-    song_id: str
-    start_frame: int
-    
-    def to_dict(self) -> Dict:
-        """Convert to dictionary for serialization"""
-        return {
-            'melody_tokens': self.melody_tokens,
-            'chord_tokens': self.chord_tokens,
-            'key_context': self.key_context,
-            'meter_context': self.meter_context,
-            'song_id': self.song_id,
-            'start_frame': self.start_frame
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict) -> 'FrameSequence':
-        """Create from dictionary after deserialization"""
-        return cls(
-            melody_tokens=data['melody_tokens'],
-            chord_tokens=data['chord_tokens'],
-            key_context=data['key_context'],
-            meter_context=data['meter_context'],
-            song_id=data['song_id'],
-            start_frame=data['start_frame']
-        )
-
 class ChordTokenizer:
     def __init__(self):
         self.chord_to_token = {}  # Maps (root, intervals, inversion) → (onset_token, hold_token)
         self.token_to_chord = {}  # Maps token_id → (root, intervals, inversion, is_onset)
-        self.next_token_id = CHORD_TOKEN_START + 1  # Start after chord silence (258)
-        self.silence_token = CHORD_SILENCE_TOKEN  # 257
+        self.next_token_id = CHORD_ONSET_HOLD_START  # Start after chord silence
+        self.silence_token = CHORD_SILENCE_TOKEN
         
     def _get_chord_key(self, root: int, intervals: List[int], inversion: int) -> Tuple[int, Tuple[int, ...], int]:
-        """Create a consistent key for a chord, preserving interval order"""
+        """Create a consistent key for a chord, ensuring interval order doesn't matter"""
         if not intervals:
             raise ValueError("Chord must have at least one interval")
         if not all(isinstance(x, int) for x in intervals):
@@ -67,7 +46,7 @@ class ChordTokenizer:
         if not isinstance(root, int) or not isinstance(inversion, int):
             raise ValueError("Root and inversion must be integers")
             
-        return (root, tuple(intervals), inversion)  # Preserve original interval order
+        return (root, tuple(sorted(intervals)), inversion)  # Sort intervals for consistency
     
     def encode_chord(self, root: int, intervals: List[int], inversion: int) -> Tuple[int, int]:
         """Encode a chord into onset and hold token IDs"""
@@ -98,21 +77,21 @@ class ChordTokenizer:
 
 class MIDITokenizer:
     def __init__(self):
-        self.silence_token = SILENCE_TOKEN  # 0
-        self.midi_onset_start = 1           # MIDI 0-127 onset: tokens 1-128
-        self.midi_hold_start = 129          # MIDI 0-127 hold: tokens 129-256
-        self.max_midi_note = 127
+        self.silence_token = SILENCE_TOKEN
+        self.midi_onset_start = MIDI_ONSET_START
+        self.midi_hold_start = MIDI_HOLD_START
+        self.max_midi_note = MAX_MIDI_NOTE
         # Pre-populate the mappings
         self.note_to_token = {(-1, -1): (self.silence_token, self.silence_token)}
         self.token_to_note = {self.silence_token: (-1, -1, False)}
-        for midi_num in range(128):
+        for midi_num in range(self.max_midi_note + 1):
             onset_token = self.midi_onset_start + midi_num
             hold_token = self.midi_hold_start + midi_num
             self.note_to_token[midi_num] = (onset_token, hold_token)
             self.token_to_note[onset_token] = (midi_num, -1, True)
             self.token_to_note[hold_token] = (midi_num, -1, False)
     def encode_midi_note(self, midi_number: int) -> Tuple[int, int]:
-        if midi_number < 0 or midi_number > 127:
+        if not (0 <= midi_number <= self.max_midi_note):
             return self.silence_token, self.silence_token
         onset_token = self.midi_onset_start + midi_number
         hold_token = self.midi_hold_start + midi_number
@@ -134,69 +113,37 @@ class FramePreprocessor:
         self.chord_tokenizer = ChordTokenizer()
         self.melody_tokenizer = MIDITokenizer()  # Changed from MelodyTokenizer
         
-    def _get_key_context(self, song_data: Dict, start_frame: int, end_frame: int) -> np.ndarray:
-        """Extract key context for a specific frame range"""
-        key_changes = song_data.get('annotations', {}).get('keys', [])
-        if not key_changes:
-            return np.full(end_frame - start_frame, 0)  # Default to C major
-            
-        # Create key context array for this chunk
-        key_context = np.zeros(end_frame - start_frame)
-        
-        # Find the last key change before or at start_frame
-        current_key = 0  # Default to C major
-        for key_change in key_changes:
-            beat = key_change.get('beat', 0)
-            frame = int(beat * 4)  # Convert to 1/16th note frames
-            if frame <= start_frame:
-                current_key = key_change.get('tonic_pitch_class', current_key)
+    def _get_song_contexts(self, song_data: Dict, total_frames: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Pre-calculates key and meter contexts for the entire song."""
+        # Key context
+        key_context = np.full(total_frames, 0) # Default to C major
+        key_changes = sorted(song_data.get('annotations', {}).get('keys', []), key=lambda x: x.get('beat', 0))
+        if key_changes:
+            for i, key_change in enumerate(key_changes):
+                start_frame = int(key_change.get('beat', 0) * 4)
+                end_frame = total_frames
+                if i + 1 < len(key_changes):
+                    end_frame = int(key_changes[i+1].get('beat', 0) * 4)
+                key_context[start_frame:end_frame] = key_change.get('tonic_pitch_class', 0)
+
+        # Meter context
+        meter_context = np.full(total_frames, 4) # Default to 4/4
+        meter_changes = sorted(song_data.get('annotations', {}).get('meters', []), key=lambda x: x.get('beat', 0))
+        if meter_changes:
+            for i, meter_change in enumerate(meter_changes):
+                start_frame = int(meter_change.get('beat', 0) * 4)
+                end_frame = total_frames
+                if i + 1 < len(meter_changes):
+                    end_frame = int(meter_changes[i+1].get('beat', 0) * 4)
+                meter_context[start_frame:end_frame] = meter_change.get('beats_per_bar', 4)
                 
-        # Fill the beginning of the context with the current key
-        key_context[:] = current_key
-        
-        # Apply all key changes within this chunk
-        for key_change in key_changes:
-            beat = key_change.get('beat', 0)
-            frame = int(beat * 4)
-            if start_frame < frame < end_frame:
-                current_key = key_change.get('tonic_pitch_class', current_key)
-                key_context[frame - start_frame:] = current_key
-                
-        return key_context
-    
-    def _get_meter_context(self, song_data: Dict, start_frame: int, end_frame: int) -> np.ndarray:
-        """Extract meter context for a specific frame range"""
-        meter_changes = song_data.get('annotations', {}).get('meters', [])
-        if not meter_changes:
-            return np.full(end_frame - start_frame, 4)  # Default to 4/4
-            
-        # Create meter context array for this chunk
-        meter_context = np.full(end_frame - start_frame, 4)  # Default to 4/4
-        
-        # Find the last meter change before or at start_frame
-        current_meter = 4  # Default to 4/4
-        for meter_change in meter_changes:
-            beat = meter_change.get('beat', 0)
-            frame = int(beat * 4)  # Convert to 1/16th note frames
-            if frame <= start_frame:
-                current_meter = meter_change.get('beats_per_bar', current_meter)
-                
-        # Fill the beginning of the context with the current meter
-        meter_context[:] = current_meter
-        
-        # Apply all meter changes within this chunk
-        for meter_change in meter_changes:
-            beat = meter_change.get('beat', 0)
-            frame = int(beat * 4)
-            if start_frame < frame < end_frame:
-                current_meter = meter_change.get('beats_per_bar', current_meter)
-                meter_context[frame - start_frame:] = current_meter
-                
-        return meter_context
-    
+        return key_context, meter_context
+
     def convert_song_to_frames(self, song_data: Dict) -> Tuple[List[int], List[int]]:
         """Convert a song to frame sequences using MIDI representation"""
-        num_beats = int(song_data['annotations']['num_beats'])
+        num_beats = int(song_data.get('annotations', {}).get('num_beats', 0))
+        if num_beats == 0:
+            return [], []
         total_frames = num_beats * 4
         
         # Initialize with silence tokens
@@ -204,25 +151,23 @@ class FramePreprocessor:
         chord_tokens = [self.chord_tokenizer.silence_token] * total_frames  # Use chord silence token
         
         # Convert melody notes to MIDI with range validation
-        for note in song_data['annotations']['melody']:
+        for note in song_data.get('annotations', {}).get('melody', []):
             onset_frame = int(note['onset'] * 4)
             offset_frame = int(note['offset'] * 4)
             pitch_class = note['pitch_class']
             octave = note['octave']
             midi_number = (octave + 1) * 12 + pitch_class
-            if midi_number < 0:
-                print(f"Warning: Note too low (pc={pitch_class}, oct={octave}, midi={midi_number}), skipping")
+            if not (0 <= midi_number <= self.melody_tokenizer.max_midi_note):
+                print(f"Warning: Note MIDI number {midi_number} out of range, skipping")
                 continue
-            if midi_number > 127:
-                print(f"Warning: Note too high (pc={pitch_class}, oct={octave}, midi={midi_number}), skipping")
-                continue
+
             onset_token, hold_token = self.melody_tokenizer.encode_midi_note(midi_number)
             if onset_frame < total_frames:
                 melody_tokens[onset_frame] = onset_token
                 for frame in range(onset_frame + 1, min(offset_frame, total_frames)):
                     melody_tokens[frame] = hold_token
         # Improved chord processing
-        for chord in song_data['annotations']['harmony']:
+        for chord in song_data.get('annotations', {}).get('harmony', []):
             onset_frame = int(chord['onset'] * 4)
             offset_frame = int(chord['offset'] * 4)
             try:
@@ -258,6 +203,10 @@ class FramePreprocessor:
         if not melody_tokens or not chord_tokens:
             return sequences
         
+        # Pre-calculate context for the whole song once
+        total_frames = len(melody_tokens)
+        song_key_context, song_meter_context = self._get_song_contexts(song_data, total_frames)
+        
         # Create sequences of fixed length
         for start_idx in range(0, len(melody_tokens), self.sequence_length):
             end_idx = min(start_idx + self.sequence_length, len(melody_tokens))
@@ -266,9 +215,9 @@ class FramePreprocessor:
             melody_seq = melody_tokens[start_idx:end_idx]
             chord_seq = chord_tokens[start_idx:end_idx]
             
-            # Get context for this specific chunk
-            key_context = self._get_key_context(song_data, start_idx, end_idx)
-            meter_context = self._get_meter_context(song_data, start_idx, end_idx)
+            # Get context for this specific chunk by slicing the pre-calculated array
+            key_context = song_key_context[start_idx:end_idx]
+            meter_context = song_meter_context[start_idx:end_idx]
             
             # Pad if needed
             if len(melody_seq) < self.sequence_length:
@@ -290,12 +239,29 @@ class FramePreprocessor:
 
 def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTokenizer, 
                        melody_tokenizer: MIDITokenizer, output_dir: Path):
-    """Save processed sequences and tokenizer info"""
+    """Save processed sequences and tokenizer info using npz and json."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    sequence_dicts = [seq.to_dict() for seq in sequences]
+    
+    # Prepare data for npz serialization
+    # Collate sequences into single NumPy arrays for efficient storage
+    collated_data = defaultdict(list)
+    for seq in sequences:
+        for key, value in seq.to_dict().items():
+            collated_data[key].append(value)
+
+    # Convert lists of arrays/values into single large arrays
+    for key in ['melody_tokens', 'chord_tokens', 'key_context', 'meter_context']:
+        collated_data[key] = np.array(collated_data[key])
+        
+    # Handle non-array data separately
+    collated_data['song_id'] = np.array(collated_data['song_id'], dtype=str)
+    collated_data['start_frame'] = np.array(collated_data['start_frame'])
+
+    # Save all sequence data into a single compressed npz file
     split_name = output_dir.name
-    with open(output_dir / f'frame_sequences_{split_name}.pkl', 'wb') as f:
-        pickle.dump(sequence_dicts, f)
+    np.savez_compressed(output_dir / f'frame_sequences_{split_name}.npz', **collated_data)
+
+    # Save tokenizers to a JSON file
     tokenizer_info = {
         'chord_to_token': {str(k): v for k, v in chord_tokenizer.chord_to_token.items()},
         'token_to_chord': {str(k): v for k, v in chord_tokenizer.token_to_chord.items()},
@@ -303,8 +269,8 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
         'chord_silence_token': CHORD_SILENCE_TOKEN,
         'note_to_token': {str(k): v for k, v in melody_tokenizer.note_to_token.items()},
         'token_to_note': {str(k): v for k, v in melody_tokenizer.token_to_note.items()},
-        'melody_vocab_size': 257,  # Fixed size for MIDI
-        'total_vocab_size': 257 + (chord_tokenizer.next_token_id - CHORD_TOKEN_START)
+        'melody_vocab_size': MELODY_VOCAB_SIZE,  # From config
+        'total_vocab_size': MELODY_VOCAB_SIZE + (chord_tokenizer.next_token_id - CHORD_TOKEN_START)
     }
     with open(output_dir / 'tokenizer_info.json', 'w') as f:
         json.dump(tokenizer_info, f, indent=2)
@@ -326,15 +292,21 @@ def main():
     
     # Process each song
     print("Processing songs into frame sequences...")
-    song_sequences = {}  # Map song_id to its sequences
+    song_sequences = defaultdict(list)  # More robust collection
     
     for song_id, song_data in raw_data.items():
+        # Basic validation of song_data structure
+        if not isinstance(song_data, dict) or 'annotations' not in song_data:
+            print(f"Warning: Skipping song {song_id} due to missing 'annotations'")
+            continue
+            
         sequences = preprocessor.process_song(song_id, song_data)
         if sequences:  # Only add songs that have valid sequences
             song_sequences[song_id] = sequences
     
     # Shuffle songs (not sequences) to avoid data leakage
     song_ids = list(song_sequences.keys())
+    random.seed(42) # for reproducibility
     random.shuffle(song_ids)
     
     # Split songs into train/valid/test (80/10/10)
@@ -379,9 +351,9 @@ def main():
     print(f"  Test: {len(test_sequences)}")
     print(f"Sequence length: {preprocessor.sequence_length}")
     print(f"Vocabulary sizes:")
-    print(f"  Melody tokens: {preprocessor.melody_tokenizer.next_token_id - MELODY_TOKEN_START}")
+    print(f"  Melody tokens: {MELODY_VOCAB_SIZE}")
     print(f"  Chord tokens: {preprocessor.chord_tokenizer.next_token_id - CHORD_TOKEN_START}")
-    print(f"  Total tokens: {preprocessor.melody_tokenizer.next_token_id - MELODY_TOKEN_START + preprocessor.chord_tokenizer.next_token_id - CHORD_TOKEN_START}")
+    print(f"  Total tokens: {MELODY_VOCAB_SIZE + (preprocessor.chord_tokenizer.next_token_id - CHORD_TOKEN_START)}")
 
 if __name__ == "__main__":
     main() 
