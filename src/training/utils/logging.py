@@ -37,7 +37,7 @@ def init_wandb(config: "TrainingConfig",
     run = wandb.init(
         project=config.wandb_project,
         entity=config.wandb_entity,
-        config=config.to_dict(),
+        config=config.as_dict(),
         name=run_name,
         job_type=job_type,
         reinit=True
