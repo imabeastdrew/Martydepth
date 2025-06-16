@@ -36,8 +36,9 @@ class FrameDataset(Dataset):
         self.sequence_length = sequence_length
         self.mode = mode
         
-        # Load sequences
-        self.sequences = self._load_sequences()
+        # Load data arrays (lazy loading)
+        self.data = self._load_data()
+        self.num_sequences = len(self.data['song_id'])
         
         # Load tokenizer info
         self.tokenizer_info = self._load_tokenizer_info()
@@ -47,8 +48,8 @@ class FrameDataset(Dataset):
         self.chord_vocab_size = self.tokenizer_info['chord_vocab_size']
         self.vocab_size = self.tokenizer_info['total_vocab_size']  # Expose total vocab size
         
-    def _load_sequences(self) -> List[FrameSequence]:
-        """Load sequences from a compressed npz file."""
+    def _load_data(self) -> np.lib.npyio.NpzFile:
+        """Load data from a compressed npz file using memory mapping."""
         sequence_file = self.data_dir / self.split / f'frame_sequences_{self.split}.npz'
         if not sequence_file.exists():
             raise FileNotFoundError(
@@ -56,26 +57,11 @@ class FrameDataset(Dataset):
                 f"Please run preprocessing to generate {self.split} sequences first."
             )
         
-        print(f"Loading {self.split} sequences from {sequence_file}")
-        
-        # Load the entire dataset from the .npz file
-        data = np.load(sequence_file, allow_pickle=True)
-        
-        # Reconstruct the list of FrameSequence objects
-        num_sequences = len(data['song_id'])
-        sequences = []
-        for i in range(num_sequences):
-            sequences.append(FrameSequence(
-                melody_tokens=data['melody_tokens'][i],
-                chord_tokens=data['chord_tokens'][i],
-                key_context=data['key_context'][i],
-                meter_context=data['meter_context'][i],
-                song_id=str(data['song_id'][i]),  # Ensure song_id is a string
-                start_frame=int(data['start_frame'][i])
-            ))
-            
-        print(f"Loaded {len(sequences)} sequences")
-        return sequences
+        print(f"Memory-mapping {self.split} sequences from {sequence_file}")
+        # Use mmap_mode='r' for read-only lazy loading
+        data = np.load(sequence_file, allow_pickle=True, mmap_mode='r')
+        print(f"Loaded {len(data['song_id'])} sequences")
+        return data
     
     def _load_tokenizer_info(self) -> Dict:
         """Load tokenizer information"""
@@ -94,7 +80,7 @@ class FrameDataset(Dataset):
     
     def __len__(self) -> int:
         """Return the number of sequences in the dataset"""
-        return len(self.sequences)
+        return self.num_sequences
     
     def _interleave_sequences(self, melody_tokens: np.ndarray, chord_tokens: np.ndarray) -> np.ndarray:
         """Interleave melody and chord tokens in paper format: [chord_1, melody_1, chord_2, melody_2, ...]"""
@@ -154,7 +140,15 @@ class FrameDataset(Dataset):
             - song_id: String identifier for the song
             - start_frame: Integer indicating the start frame
         """
-        sequence = self.sequences[idx]
+        # Lazily construct the FrameSequence object for the requested index
+        sequence = FrameSequence(
+            melody_tokens=self.data['melody_tokens'][idx],
+            chord_tokens=self.data['chord_tokens'][idx],
+            key_context=self.data['key_context'][idx],
+            meter_context=self.data['meter_context'][idx],
+            song_id=str(self.data['song_id'][idx]),
+            start_frame=int(self.data['start_frame'][idx])
+        )
         
         if self.mode == 'online':
             return self._get_online_format(sequence)
