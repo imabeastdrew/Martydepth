@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from transformers import Adafactor
 from torch.optim.lr_scheduler import LambdaLR
 import wandb
+from jsonargparse import ArgumentParser
 
 from src.models.online_transformer import OnlineTransformer
 from src.data.dataset import create_dataloader
@@ -227,14 +228,11 @@ def main(config: TrainingConfig):
     run.finish()
 
 if __name__ == "__main__":
-    # This is a basic example of how to run training.
-    # For more complex configurations, you might use a tool like jsonargparse
-    # to directly instantiate the TrainingConfig from a YAML file or command line.
-    config = TrainingConfig(
-        data_dir="data/interim",
-        batch_size=32, # Smaller batch size for local testing
-        total_steps=10000,
-        warmup_steps=500,
-        learning_rate=1e-4,
-    )
-    main(config) 
+    # Use jsonargparse to automatically handle config loading from YAML and CLI
+    parser = ArgumentParser()
+    parser.add_class_arguments(TrainingConfig, "config")
+    
+    cfg = parser.parse_args()
+    
+    # The config object is nested under 'config' namespace
+    main(config=cfg.config) 

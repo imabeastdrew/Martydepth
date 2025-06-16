@@ -1,0 +1,25 @@
+# Base configuration for the OnlineTransformer model
+
+# --- Data settings ---
+data_dir: /work/10539/drewtaylor635/vista/Martydepth/data/interim
+batch_size: 256
+num_workers: 8 # Good default for a powerful node
+
+# --- Model architecture ---
+embed_dim: 512
+num_layers: 8
+num_heads: 8
+max_sequence_length: 512
+dropout: 0.1
+
+# --- Training loop ---
+learning_rate: 1.0e-4
+weight_decay: 0.01
+total_steps: 500000
+warmup_steps: 2000
+gradient_clip_val: 1.0
+log_every_n_steps: 100
+
+# --- W&B Logging ---
+wandb_project: "martydepth"
+checkpoint_dir: /work/10539/drewtaylor635/vista/Martydepth/checkpoints 
