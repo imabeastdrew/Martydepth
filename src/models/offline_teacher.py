@@ -207,8 +207,8 @@ class OfflineTeacherModel(nn.Module):
             num_decoder_layers=num_layers,
             dim_feedforward=4 * embed_dim,
             dropout=dropout,
-            batch_first=True
-        )
+                batch_first=True
+            )
         
         # Output projection to chord vocabulary
         self.output_head = nn.Linear(embed_dim, chord_vocab_size)
@@ -231,7 +231,7 @@ class OfflineTeacherModel(nn.Module):
         """Create a causal mask for the decoder."""
         mask = torch.triu(torch.ones(seq_length, seq_length, device=device), diagonal=1)
         return mask.masked_fill(mask == 1, float('-inf'))
-
+    
     def forward(self, melody_tokens: torch.Tensor, chord_tokens: torch.Tensor, melody_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass for the teacher model.

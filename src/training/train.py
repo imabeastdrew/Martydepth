@@ -40,7 +40,7 @@ def train_step(model: nn.Module,
             for k, v in batch.items()}
     
     # Forward pass on interleaved sequence
-    logits = model(batch['input_tokens'])
+    logits = model(batch['input_tokens'], padding_mask=batch.get('padding_mask'))
     
     # Calculate loss (predict next token)
     loss = nn.functional.cross_entropy(
@@ -145,7 +145,7 @@ def validate(model: nn.Module,
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
                     for k, v in batch.items()}
             
-            logits = model(batch['input_tokens'])
+            logits = model(batch['input_tokens'], padding_mask=batch.get('padding_mask'))
             loss = nn.functional.cross_entropy(
                 logits.reshape(-1, model.vocab_size),
                 batch['target_tokens'].reshape(-1)

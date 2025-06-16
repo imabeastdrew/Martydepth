@@ -1,158 +1,142 @@
 #!/usr/bin/env python3
 """
-Training script for OfflineTeacherModel
+Training script for the Offline Teacher model.
 """
 
 import argparse
-import os
 from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.optim import AdamW
+from transformers import Adafactor
 from torch.optim.lr_scheduler import LambdaLR
 import wandb
+from jsonargparse import ArgumentParser
 
 from src.models.offline_teacher import OfflineTeacherModel
 from src.data.dataset import create_dataloader
 from src.training.config import TrainingConfig
 from src.training.utils.logging import init_wandb, log_model_artifact
+from src.training.utils.metrics import log_training_metrics, log_validation_metrics
 
-def get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps):
-    """Create linear schedule with warmup"""
-    def lr_lambda(current_step):
-        if current_step < num_warmup_steps:
-            return float(current_step) / float(max(1, num_warmup_steps))
-        return max(0.0, float(num_training_steps - current_step) / 
-                  float(max(1, num_training_steps - num_warmup_steps)))
+def get_warmup_schedule(optimizer, num_warmup_steps):
+    """Create a linear warmup schedule."""
+    def lr_lambda(step):
+        if step < num_warmup_steps:
+            return float(step) / float(max(1, num_warmup_steps))
+        return 1.0
     return LambdaLR(optimizer, lr_lambda)
 
-def train_epoch(model: nn.Module,
-                train_loader: DataLoader,
-                optimizer: torch.optim.Optimizer,
-                scheduler: torch.optim.lr_scheduler.LRScheduler,
-                device: torch.device,
-                config: TrainingConfig,
-                step: int) -> int:
-    """Train for one epoch"""
-    model.train()
-    total_loss = 0
-    num_batches = 0
+def train_step(model: nn.Module,
+               batch: dict,
+               optimizer: torch.optim.Optimizer,
+               scheduler: torch.optim.lr_scheduler.LRScheduler,
+               device: torch.device,
+               config: TrainingConfig) -> float:
+    """A single training step for the offline teacher model."""
+    batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
     
-    for batch in train_loader:
-        # Move batch to device
-        melody_tokens = batch['melody_tokens'].to(device)
-        chord_input = batch['chord_input'].to(device)
-        chord_target = batch['chord_target'].to(device)
-        
-        # Forward pass
-        chord_logits = model(melody_tokens, chord_input)
-        
-        # Compute loss
-        loss = nn.functional.cross_entropy(
-            chord_logits.view(-1, chord_logits.size(-1)),
-            chord_target.view(-1)
-        )
-        
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip_val)
-        
-        optimizer.step()
-        scheduler.step()
-        
-        # Update metrics
-        total_loss += loss.item()
-        num_batches += 1
-        
-        # Log metrics
-        if step % config.log_every_n_steps == 0:
-            wandb.log({
-                "train/loss": loss.item(),
-                "train/learning_rate": scheduler.get_last_lr()[0]
-            }, step=step)
-        
-        step += 1
+    # Forward pass: provide full melody and groud-truth chords (teacher forcing)
+    logits = model(
+        melody_tokens=batch['melody_tokens'],
+        chord_tokens=batch['chord_input']
+    )
     
-    # Log epoch metrics
-    avg_loss = total_loss / num_batches
-    wandb.log({
-        "train/epoch_loss": avg_loss,
-        "train/epoch": step // len(train_loader)
-    })
+    # Calculate loss against the target chord sequence
+    loss = nn.functional.cross_entropy(
+        logits.reshape(-1, config.chord_vocab_size),
+        batch['chord_target'].reshape(-1)
+    )
     
-    return step
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.gradient_clip_val)
+    optimizer.step()
+    scheduler.step()
+    
+    return loss.item()
 
 def validate(model: nn.Module,
-            val_loader: DataLoader,
-            device: torch.device) -> float:
-    """Validate model"""
+             val_loader: DataLoader,
+             device: torch.device,
+             config: TrainingConfig) -> float:
+    """Validation loop for the offline teacher model."""
     model.eval()
     total_loss = 0
     num_batches = 0
     
     with torch.no_grad():
         for batch in val_loader:
-            # Move batch to device
-            melody_tokens = batch['melody_tokens'].to(device)
-            chord_input = batch['chord_input'].to(device)
-            chord_target = batch['chord_target'].to(device)
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
-            # Forward pass
-            chord_logits = model(melody_tokens, chord_input)
-            
-            # Compute loss
-            loss = nn.functional.cross_entropy(
-                chord_logits.view(-1, chord_logits.size(-1)),
-                chord_target.view(-1)
+            logits = model(
+                melody_tokens=batch['melody_tokens'],
+                chord_tokens=batch['chord_input']
             )
             
-            # Update metrics
+            loss = nn.functional.cross_entropy(
+                logits.reshape(-1, config.chord_vocab_size),
+                batch['chord_target'].reshape(-1)
+            )
+            
             total_loss += loss.item()
             num_batches += 1
-    
+            
     return total_loss / num_batches
 
-def main():
-    # Parse arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default="data/interim")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--learning_rate", type=float, default=1e-4)
-    parser.add_argument("--max_epochs", type=int, default=100)
-    parser.add_argument("--wandb_project", type=str, default="martydepth")
-    parser.add_argument("--wandb_entity", type=str, default=None)
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
-    args = parser.parse_args()
+def train(model: nn.Module,
+          train_loader: DataLoader,
+          val_loader: DataLoader,
+          optimizer: torch.optim.Optimizer,
+          scheduler: torch.optim.lr_scheduler.LRScheduler,
+          device: torch.device,
+          config: TrainingConfig):
+    """Main training loop."""
+    model.train()
+    global_step = 0
+    best_val_loss = float('inf')
     
-    # Create config
-    config = TrainingConfig(
-        data_dir=args.data_dir,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        max_epochs=args.max_epochs,
-        wandb_project=args.wandb_project,
-        wandb_entity=args.wandb_entity,
-        checkpoint_dir=args.checkpoint_dir
-    )
+    train_iter = iter(train_loader)
+    while global_step < config.total_steps:
+        try:
+            batch = next(train_iter)
+        except StopIteration:
+            current_epoch = global_step // len(train_loader)
+            val_loss = validate(model, val_loader, device, config)
+            log_validation_metrics(loss=val_loss, epoch=current_epoch, step=global_step)
+            print(f"\nStep {global_step} | Validation Loss: {val_loss:.4f}")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                print("  New best validation loss! Saving checkpoint...")
+                log_model_artifact(model, f"offline_teacher_step_{global_step}", metadata={"val_loss": val_loss})
+
+            train_iter = iter(train_loader)
+            batch = next(train_iter)
+            
+        loss = train_step(model, batch, optimizer, scheduler, device, config)
+        
+        if global_step % config.log_every_n_steps == 0:
+            current_epoch = global_step // len(train_loader)
+            log_training_metrics(model=model, loss=loss, optimizer=optimizer, epoch=current_epoch, step=global_step)
+            print(f"\rStep {global_step}/{config.total_steps} | Loss: {loss:.4f}", end="")
+        
+        global_step += 1
     
-    # Initialize wandb
-    run = init_wandb(config, name=f"offline_teacher_{wandb.util.generate_id()}")
-    
-    # Set device
+    print("\nTraining complete.")
+
+def main(config: TrainingConfig):
+    """Main entry point for training."""
+    run = init_wandb(config, name=f"offline_teacher_{wandb.util.generate_id()}", job_type="offline_training")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Create dataloaders
+
     train_loader = create_dataloader(
         data_dir=Path(config.data_dir),
         split="train",
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         sequence_length=config.max_sequence_length,
-        mode="offline"  # Use offline mode for teacher model
+        mode='offline'
     )
     
     val_loader = create_dataloader(
@@ -161,55 +145,38 @@ def main():
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         sequence_length=config.max_sequence_length,
-        mode="offline"  # Use offline mode for teacher model
+        mode='offline'
     )
     
-    # Set vocab size from dataset
-    config.vocab_size = train_loader.dataset.total_vocab_size
+    dataset_info = train_loader.dataset.tokenizer_info
+    config.melody_vocab_size = dataset_info['melody_vocab_size']
+    config.chord_vocab_size = dataset_info['chord_vocab_size']
 
-    # Create model
-    model = OfflineTeacherModel(config).to(device)
-    
-    # Create optimizer and scheduler
-    optimizer = AdamW(
+    model = OfflineTeacherModel(
+        melody_vocab_size=config.melody_vocab_size,
+        chord_vocab_size=config.chord_vocab_size,
+        embed_dim=config.embed_dim,
+        num_heads=config.num_heads,
+        num_layers=config.num_layers,
+        dropout=config.dropout,
+        max_seq_length=config.max_sequence_length
+    ).to(device)
+
+    optimizer = Adafactor(
         model.parameters(),
         lr=config.learning_rate,
-        weight_decay=config.weight_decay
+        scale_parameter=False,
+        relative_step=False
     )
     
-    num_training_steps = len(train_loader) * config.max_epochs
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=config.warmup_steps,
-        num_training_steps=num_training_steps
-    )
+    scheduler = get_warmup_schedule(optimizer, num_warmup_steps=config.warmup_steps)
     
-    # Training loop
-    step = 0
-    best_val_loss = float('inf')
+    train(model, train_loader, val_loader, optimizer, scheduler, device, config)
     
-    for epoch in range(config.max_epochs):
-        # Train
-        step = train_epoch(
-            model, train_loader, optimizer, scheduler,
-            device, config, step
-        )
-        
-        # Validate
-        val_loss = validate(model, val_loader, device)
-        wandb.log({"val/loss": val_loss}, step=step)
-        
-        # Save checkpoint if validation loss improved
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            log_model_artifact(
-                model,
-                f"offline_teacher_epoch_{epoch}",
-                metadata={"val_loss": best_val_loss}
-            )
-    
-    # Cleanup
     run.finish()
 
 if __name__ == "__main__":
-    main() 
+    parser = ArgumentParser()
+    parser.add_class_arguments(TrainingConfig, "config")
+    cfg = parser.parse_args()
+    main(config=cfg.config) 

@@ -61,13 +61,13 @@ class OnlineTransformer(nn.Module):
         # Invert mask (1s become 0s and vice versa) and convert to float
         return mask.masked_fill(mask == 1, float('-inf'))
         
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+    def forward(self, tokens: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass on interleaved sequence
         
         Args:
             tokens: Interleaved chord/melody sequence [batch_size, seq_length]
-                   Format: [chord_1, melody_1, chord_2, melody_2, ...]
+            padding_mask: Boolean mask for padding tokens [batch_size, seq_length]
         
         Returns:
             logits: Prediction logits for next token [batch_size, seq_length, vocab_size]
@@ -76,7 +76,7 @@ class OnlineTransformer(nn.Module):
         
         # Create position indices and causal mask
         positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
-        mask = self.create_causal_mask(seq_length).to(tokens.device)
+        causal_mask = self.create_causal_mask(seq_length).to(tokens.device)
         
         # Get embeddings
         token_embeds = self.token_embedding(tokens)
@@ -86,8 +86,8 @@ class OnlineTransformer(nn.Module):
         x = token_embeds + pos_embeds
         x = self.dropout(x)
         
-        # Apply transformer with causal masking
-        x = self.transformer(x, mask=mask)
+        # Apply transformer with causal and padding masks
+        x = self.transformer(x, mask=causal_mask, src_key_padding_mask=padding_mask)
         
         # Get predictions
         logits = self.output_head(x)

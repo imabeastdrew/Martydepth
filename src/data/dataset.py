@@ -13,6 +13,7 @@ import numpy as np
 from dataclasses import dataclass
 
 from src.data.datastructures import FrameSequence
+from src.config.tokenization_config import SILENCE_TOKEN
 
 class FrameDataset(Dataset):
     """PyTorch Dataset for loading frame sequences"""
@@ -85,19 +86,24 @@ class FrameDataset(Dataset):
     
     def _get_online_format(self, sequence: FrameSequence) -> Dict[str, torch.Tensor]:
         """Standard autoregressive format"""
-        # Create full interleaved sequence in paper format: [chord_1, melody_1, chord_2, melody_2, ...]
+        # Create full interleaved sequence: [chord_0, melody_0, chord_1, melody_1, ...]
         full_interleaved = self._interleave_sequences(
-            sequence.melody_tokens,  # [T] - full sequence
-            sequence.chord_tokens    # [T] - full sequence  
+            sequence.melody_tokens,
+            sequence.chord_tokens
         )
         
         # Standard autoregressive split
-        input_tokens = torch.tensor(full_interleaved[:-1], dtype=torch.long)   # [0:2T-1]
-        target_tokens = torch.tensor(full_interleaved[1:], dtype=torch.long)   # [1:2T]
+        input_tokens = torch.tensor(full_interleaved[:-1], dtype=torch.long)
+        target_tokens = torch.tensor(full_interleaved[1:], dtype=torch.long)
+
+        # Create padding mask: True for padding tokens (silence), False otherwise
+        # The online model uses a single, shared silence token for melody and chords.
+        padding_mask = (input_tokens == SILENCE_TOKEN)
         
         return {
-            'input_tokens': input_tokens,    # [2T-1] - input sequence
-            'target_tokens': target_tokens,  # [2T-1] - next token targets
+            'input_tokens': input_tokens,
+            'target_tokens': target_tokens,
+            'padding_mask': padding_mask,
             'song_id': sequence.song_id,
             'start_frame': sequence.start_frame
         }
