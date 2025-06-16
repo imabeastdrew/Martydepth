@@ -160,7 +160,11 @@ def validate(model: nn.Module,
 def main(config: TrainingConfig):
     """Main entry point for training."""
     # Initialize wandb
-    run = init_wandb(config, name=f"online_transformer_{wandb.util.generate_id()}")
+    run = init_wandb(
+        config, 
+        name=f"online_transformer_{wandb.util.generate_id()}",
+        job_type="online_training"
+    )
     
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
