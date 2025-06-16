@@ -13,10 +13,10 @@ max_sequence_length: 512
 dropout: 0.1
 
 # --- Training loop ---
-learning_rate: 1.0e-4
+learning_rate: 1.0e-3
 weight_decay: 0.01
-total_steps: 500000
-warmup_steps: 2000
+total_steps: 50000
+warmup_steps: 1000
 gradient_clip_val: 1.0
 log_every_n_steps: 100
 
