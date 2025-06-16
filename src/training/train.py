@@ -190,9 +190,9 @@ def main(config: TrainingConfig):
     
     # Update config with vocab sizes from the dataset
     dataset_info = train_loader.dataset.tokenizer_info
-    config.vocab_size = dataset_info['total_vocab_size'] + 1
-    config.melody_vocab_size = dataset_info['melody_vocab_size'] + 1
-    config.chord_vocab_size = dataset_info['chord_vocab_size'] + 1
+    config.vocab_size = dataset_info['total_vocab_size']
+    config.melody_vocab_size = dataset_info['melody_vocab_size']
+    config.chord_vocab_size = dataset_info['chord_vocab_size']
 
     # Create model
     model = OnlineTransformer(

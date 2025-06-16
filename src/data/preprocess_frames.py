@@ -249,20 +249,40 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
         sequence_filename = f"sequence_{i:06d}.pkl"
         with open(output_dir / sequence_filename, 'wb') as f:
             pickle.dump(seq, f)
+            
+    # --- Correctly Calculate and Save Tokenizer Info ---
+    # Melody vocab size is fixed and known
+    final_melody_vocab_size = melody_tokenizer.next_token_id
 
-    # Save tokenizers to a JSON file
+    # Chord vocab size is dynamic, find the max token ID used
+    max_chord_token = 0
+    if chord_tokenizer.token_to_chord:
+        max_chord_token = max(chord_tokenizer.token_to_chord.keys())
+    # Vocab size needs to be max_token + 1
+    final_chord_vocab_size = max_chord_token + 1
+    
+    # Total vocab size is the max of the two individual sizes
+    final_total_vocab_size = max(final_melody_vocab_size, final_chord_vocab_size)
+
     tokenizer_info = {
-        'chord_to_token': {str(k): v for k, v in chord_tokenizer.chord_to_token.items()},
-        'token_to_chord': {str(k): v for k, v in chord_tokenizer.token_to_chord.items()},
-        'chord_vocab_size': chord_tokenizer.next_token_id - CHORD_TOKEN_START,
-        'chord_silence_token': CHORD_SILENCE_TOKEN,
-        'note_to_token': {str(k): v for k, v in melody_tokenizer.note_to_token.items()},
-        'token_to_note': {str(k): v for k, v in melody_tokenizer.token_to_note.items()},
-        'melody_vocab_size': MELODY_VOCAB_SIZE,  # From config
-        'total_vocab_size': MELODY_VOCAB_SIZE + (chord_tokenizer.next_token_id - CHORD_TOKEN_START)
+        "melody_vocab_size": final_melody_vocab_size,
+        "chord_vocab_size": final_chord_vocab_size,
+        "total_vocab_size": final_total_vocab_size,
+        "chord_token_start": CHORD_TOKEN_START
     }
+    
+    print("\n--- Final Vocabulary Info ---")
+    print(f"  Melody vocab size: {final_melody_vocab_size}")
+    print(f"  Chord vocab size: {final_chord_vocab_size}")
+    print(f"  Total vocab size: {final_total_vocab_size}")
+    print("-----------------------------\n")
+
     with open(output_dir / 'tokenizer_info.json', 'w') as f:
-        json.dump(tokenizer_info, f, indent=2)
+        json.dump(tokenizer_info, f, indent=4)
+        
+    # Save the tokenizer itself for future use (e.g., inference)
+    with open(output_dir / 'chord_tokenizer.pkl', 'wb') as f:
+        pickle.dump(chord_tokenizer, f)
 
 def main():
     # Get the project root directory and file paths
@@ -339,10 +359,15 @@ def main():
     print(f"  Valid: {len(valid_sequences)}")
     print(f"  Test: {len(test_sequences)}")
     print(f"Sequence length: {preprocessor.sequence_length}")
+    
+    # --- Load the final training tokenizer info to print the definitive vocab sizes ---
+    with open(output_dir / 'train' / 'tokenizer_info.json', 'r') as f:
+        final_tokenizer_info = json.load(f)
+
     print(f"Vocabulary sizes:")
-    print(f"  Melody tokens: {MELODY_VOCAB_SIZE}")
-    print(f"  Chord tokens: {preprocessor.chord_tokenizer.next_token_id - CHORD_TOKEN_START}")
-    print(f"  Total tokens: {MELODY_VOCAB_SIZE + (preprocessor.chord_tokenizer.next_token_id - CHORD_TOKEN_START)}")
+    print(f"  Melody tokens: {final_tokenizer_info['melody_vocab_size']}")
+    print(f"  Chord tokens: {final_tokenizer_info['chord_vocab_size']}")
+    print(f"  Total tokens: {final_tokenizer_info['total_vocab_size']}")
 
 if __name__ == "__main__":
     main() 
