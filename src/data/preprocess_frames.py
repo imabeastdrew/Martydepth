@@ -239,27 +239,16 @@ class FramePreprocessor:
 
 def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTokenizer, 
                        melody_tokenizer: MIDITokenizer, output_dir: Path):
-    """Save processed sequences and tokenizer info using npz and json."""
+    """Save processed sequences as individual pickle files and tokenizer info as json."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Prepare data for npz serialization
-    # Collate sequences into single NumPy arrays for efficient storage
-    collated_data = defaultdict(list)
-    for seq in sequences:
-        for key, value in seq.to_dict().items():
-            collated_data[key].append(value)
 
-    # Convert lists of arrays/values into single large arrays
-    for key in ['melody_tokens', 'chord_tokens', 'key_context', 'meter_context']:
-        collated_data[key] = np.array(collated_data[key])
-        
-    # Handle non-array data separately
-    collated_data['song_id'] = np.array(collated_data['song_id'], dtype=str)
-    collated_data['start_frame'] = np.array(collated_data['start_frame'])
-
-    # Save all sequence data into a single compressed npz file
-    split_name = output_dir.name
-    np.savez_compressed(output_dir / f'frame_sequences_{split_name}.npz', **collated_data)
+    # Save each sequence as a separate pickle file for easy lazy loading
+    print(f"Saving {len(sequences)} sequences to {output_dir}...")
+    for i, seq in enumerate(sequences):
+        # Use a zero-padded filename for correct sorting
+        sequence_filename = f"sequence_{i:06d}.pkl"
+        with open(output_dir / sequence_filename, 'wb') as f:
+            pickle.dump(seq, f)
 
     # Save tokenizers to a JSON file
     tokenizer_info = {

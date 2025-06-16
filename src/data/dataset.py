@@ -36,10 +36,18 @@ class FrameDataset(Dataset):
         self.sequence_length = sequence_length
         self.mode = mode
         
-        # Load data arrays (lazy loading)
-        self.data = self._load_data()
-        self.num_sequences = len(self.data['song_id'])
+        # Point to the directory for the correct split
+        self.split_dir = self.data_dir / self.split
         
+        # Discover all sequence files in the directory
+        self.sequence_files = sorted(list(self.split_dir.glob("sequence_*.pkl")))
+        if not self.sequence_files:
+            raise FileNotFoundError(
+                f"No sequence .pkl files found in {self.split_dir}. "
+                f"Please run preprocessing to generate the data for the '{self.split}' split."
+            )
+        self.num_sequences = len(self.sequence_files)
+
         # Load tokenizer info
         self.tokenizer_info = self._load_tokenizer_info()
         
@@ -48,24 +56,9 @@ class FrameDataset(Dataset):
         self.chord_vocab_size = self.tokenizer_info['chord_vocab_size']
         self.vocab_size = self.tokenizer_info['total_vocab_size']  # Expose total vocab size
         
-    def _load_data(self) -> np.lib.npyio.NpzFile:
-        """Load data from a compressed npz file using memory mapping."""
-        sequence_file = self.data_dir / self.split / f'frame_sequences_{self.split}.npz'
-        if not sequence_file.exists():
-            raise FileNotFoundError(
-                f"Sequence file not found: {sequence_file}\n"
-                f"Please run preprocessing to generate {self.split} sequences first."
-            )
-        
-        print(f"Memory-mapping {self.split} sequences from {sequence_file}")
-        # Use mmap_mode='r' for read-only lazy loading
-        data = np.load(sequence_file, allow_pickle=True, mmap_mode='r')
-        print(f"Loaded {len(data['song_id'])} sequences")
-        return data
-    
     def _load_tokenizer_info(self) -> Dict:
         """Load tokenizer information"""
-        tokenizer_file = self.data_dir / self.split / 'tokenizer_info.json'
+        tokenizer_file = self.split_dir / 'tokenizer_info.json'
         if not tokenizer_file.exists():
             raise FileNotFoundError(
                 f"Tokenizer info not found: {tokenizer_file}\n"
@@ -125,30 +118,14 @@ class FrameDataset(Dataset):
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
-        Get a sequence by index
-        
-        Returns:
-            Dictionary containing:
-            For online mode:
-            - input_tokens: Interleaved melody and chord tokens [2*(T-1)]
-            - target_tokens: Next token targets [2*(T-1)]
-            For offline mode:
-            - melody_tokens: Full melody sequence [T]
-            - chord_input: Causal chord input [T-1]
-            - chord_target: Next chord targets [T-1]
-            Common:
-            - song_id: String identifier for the song
-            - start_frame: Integer indicating the start frame
+        Get a sequence by index by loading its individual pickle file.
         """
-        # Lazily construct the FrameSequence object for the requested index
-        sequence = FrameSequence(
-            melody_tokens=self.data['melody_tokens'][idx],
-            chord_tokens=self.data['chord_tokens'][idx],
-            key_context=self.data['key_context'][idx],
-            meter_context=self.data['meter_context'][idx],
-            song_id=str(self.data['song_id'][idx]),
-            start_frame=int(self.data['start_frame'][idx])
-        )
+        # Get the file path for the requested index
+        sequence_path = self.sequence_files[idx]
+        
+        # Load the single FrameSequence object from its pickle file
+        with open(sequence_path, 'rb') as f:
+            sequence = pickle.load(f)
         
         if self.mode == 'online':
             return self._get_online_format(sequence)
