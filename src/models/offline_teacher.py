@@ -244,6 +244,28 @@ class OfflineTeacherModel(nn.Module):
         Returns:
             logits: [batch, chord_seq, chord_vocab_size]
         """
+        # --- Detailed Input Validation ---
+        melody_vocab_size = self.embeddings.melody_embedding.num_embeddings
+        if torch.any(melody_tokens >= melody_vocab_size):
+            max_token = torch.max(melody_tokens)
+            raise ValueError(
+                f"Melody token index out of range. "
+                f"Max token ID: {max_token}, Vocab size: {melody_vocab_size}"
+            )
+        if torch.any(melody_tokens < 0):
+            raise ValueError("Melody token contains negative indices.")
+
+        chord_vocab_size = self.embeddings.chord_embedding.num_embeddings
+        if torch.any(chord_tokens >= chord_vocab_size):
+            max_token = torch.max(chord_tokens)
+            raise ValueError(
+                f"Chord token index out of range. "
+                f"Max token ID: {max_token}, Vocab size: {chord_vocab_size}"
+            )
+        if torch.any(chord_tokens < 0):
+            raise ValueError("Chord token contains negative indices.")
+        # --------------------------------
+
         # 1. Get embeddings
         melody_embed = self.embeddings.encode_melody(melody_tokens)
         chord_embed = self.embeddings.encode_chords(chord_tokens)
