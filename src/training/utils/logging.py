@@ -12,40 +12,6 @@ from wandb.util import generate_id
 import torch.nn as nn
 import json
 
-from src.training.config import TrainingConfig
-
-def init_wandb(config: "TrainingConfig", 
-               name: Optional[str] = None, 
-               job_type: Optional[str] = None):
-    """
-    Initialize a new W&B run.
-    
-    Args:
-        config: Training configuration object
-        name: Optional name for the run
-        job_type: Optional type for the run (e.g., 'train', 'eval')
-    """
-    run_name = name or f"run_{generate_id()}"
-    
-    print(f" Initializing W&B run: {run_name}")
-    print(f"  Project: {config.wandb_project}")
-    print(f"  Entity: {config.wandb_entity}")
-    
-    # Create checkpoint directory
-    os.makedirs(config.checkpoint_dir, exist_ok=True)
-    
-    # Initialize wandb
-    run = wandb.init(
-        project=config.wandb_project,
-        entity=config.wandb_entity,
-        config=config.as_dict(),
-        name=run_name,
-        job_type=job_type,
-        reinit=True
-    )
-    
-    return run
-
 def log_model_artifact(model: nn.Module, 
                        name: str, 
                        tokenizer_info: Dict,

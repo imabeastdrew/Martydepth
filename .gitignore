@@ -78,3 +78,13 @@ src/training/scripts/*.sh
 
 # New line for the new file
 /src/evaluation/scripts/evaluate_parallel.sbatch
+
+# User-specific files
+wandb_api_key.txt
+
+# Wandb
+/wandb/
+
+# Slurm
+slurm_logs/
+.slurm/

@@ -1,0 +1,21 @@
+# Configuration for Discriminative Reward Model Training
+
+# Data args
+data_dir: "data/interim"
+max_seq_length: 256 # Note: dataloader will request 2*this length
+
+# Model args
+embed_dim: 512
+num_heads: 8
+num_layers: 6
+dropout: 0.1
+
+# Training args
+epochs: 10
+batch_size: 64
+learning_rate: 1.0e-4
+num_workers: 4
+
+# W&B args
+wandb_project: "martydepth-discriminator"
+wandb_run_name: "discriminator-from-config" 

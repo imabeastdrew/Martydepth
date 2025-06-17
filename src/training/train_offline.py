@@ -7,66 +7,95 @@ import argparse
 from pathlib import Path
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from transformers import Adafactor
 from torch.optim.lr_scheduler import LambdaLR
 import wandb
-from jsonargparse import ArgumentParser
+import yaml
+from tqdm import tqdm
+from transformers import Adafactor
 
 from src.models.offline_teacher import OfflineTeacherModel
 from src.data.dataset import create_dataloader
-from src.training.config import TrainingConfig
-from src.training.utils.logging import init_wandb, log_model_artifact
-from src.training.utils.metrics import log_training_metrics, log_validation_metrics
+from src.training.utils.logging import log_model_artifact
+from src.training.utils.schedulers import get_warmup_schedule
 
-def get_warmup_schedule(optimizer, num_warmup_steps):
-    """Create a linear warmup schedule."""
-    def lr_lambda(step):
-        if step < num_warmup_steps:
-            return float(step) / float(max(1, num_warmup_steps))
-        return 1.0
-    return LambdaLR(optimizer, lr_lambda)
+def main(config: dict):
+    """Main training function."""
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    print(f"Using device: {device}")
 
-def train_step(model: nn.Module,
-               batch: dict,
-               optimizer: torch.optim.Optimizer,
-               scheduler: torch.optim.lr_scheduler.LRScheduler,
-               device: torch.device,
-               config: TrainingConfig) -> float:
-    """A single training step for the offline teacher model."""
-    batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-    
-    # Forward pass: provide full melody and groud-truth chords (teacher forcing)
-    logits = model(
-        melody_tokens=batch['melody_tokens'],
-        chord_tokens=batch['chord_input']
+    # --- W&B Initialization ---
+    wandb.init(
+        project=config['wandb_project'],
+        config=config,
+        name=f"offline_teacher_{wandb.util.generate_id()}",
+        job_type="offline_training"
+    )
+
+    # --- Dataloaders ---
+    train_loader = create_dataloader(
+        data_dir=Path(config['data_dir']),
+        split="train",
+        batch_size=config['batch_size'],
+        num_workers=config['num_workers'],
+        sequence_length=config['max_sequence_length'],
+        mode='offline'
     )
     
-    # Calculate loss against the target chord sequence
-    loss = nn.functional.cross_entropy(
-        logits.reshape(-1, config.chord_vocab_size),
-        batch['chord_target'].reshape(-1)
+    val_loader = create_dataloader(
+        data_dir=Path(config['data_dir']),
+        split="valid",
+        batch_size=config['batch_size'],
+        num_workers=config['num_workers'],
+        sequence_length=config['max_sequence_length'],
+        mode='offline'
     )
     
-    optimizer.zero_grad()
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.gradient_clip_val)
-    optimizer.step()
-    scheduler.step()
+    tokenizer_info = train_loader.dataset.tokenizer_info
+    config['melody_vocab_size'] = tokenizer_info['melody_vocab_size']
+    config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
     
-    return loss.item()
+    # --- Model, Optimizer, Scheduler ---
+    model = OfflineTeacherModel(
+        melody_vocab_size=config['melody_vocab_size'],
+        chord_vocab_size=config['chord_vocab_size'],
+        embed_dim=config['embed_dim'],
+        num_heads=config['num_heads'],
+        num_layers=config['num_layers'],
+        dropout=config['dropout'],
+        max_seq_length=config['max_sequence_length']
+    ).to(device)
 
-def validate(model: nn.Module,
-             val_loader: DataLoader,
-             device: torch.device,
-             config: TrainingConfig) -> float:
-    """Validation loop for the offline teacher model."""
-    model.eval()
-    total_loss = 0
-    num_batches = 0
+    optimizer = Adafactor(
+        model.parameters(),
+        lr=config['learning_rate'],
+        scale_parameter=False,
+        relative_step=False
+    )
     
-    with torch.no_grad():
-        for batch in val_loader:
+    scheduler = get_warmup_schedule(optimizer, num_warmup_steps=config['warmup_steps'])
+
+    # --- Training Loop ---
+    best_val_loss = float('inf')
+    steps_without_improvement = 0
+    global_step = 0
+
+    print(f"\n--- Offline Training Info ---")
+    print(f"  Max epochs: {config['max_epochs']}")
+    print(f"  Early stopping patience: {config['early_stopping_patience']}")
+
+    for epoch in range(config['max_epochs']):
+        print(f"\n--- Epoch {epoch+1}/{config['max_epochs']} ---")
+        
+        # Training
+        model.train()
+        total_train_loss = 0
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1} Training")
+        for batch in pbar:
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
             logits = model(
@@ -75,70 +104,69 @@ def validate(model: nn.Module,
             )
             
             loss = nn.functional.cross_entropy(
-                logits.reshape(-1, config.chord_vocab_size),
+                logits.reshape(-1, config['chord_vocab_size']),
                 batch['chord_target'].reshape(-1)
             )
             
-            total_loss += loss.item()
-            num_batches += 1
-            
-    return total_loss / num_batches
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['gradient_clip_val'])
+            optimizer.step()
+            scheduler.step()
 
-def train(model: nn.Module,
-          train_loader: DataLoader,
-          val_loader: DataLoader,
-          optimizer: torch.optim.Optimizer,
-          scheduler: torch.optim.lr_scheduler.LRScheduler,
-          device: torch.device,
-          config: TrainingConfig,
-          tokenizer_info: dict):
-    """Main training loop."""
-    model.train()
-    global_step = 0
-    best_val_loss = float('inf')
-    steps_without_improvement = 0
-    
-    print(f"\n--- Offline Training Info ---")
-    print(f"  Max epochs: {config.max_epochs}")
-    print(f"  Early stopping patience: {config.early_stopping_patience}")
-
-    for epoch in range(config.max_epochs):
-        print(f"\n--- Epoch {epoch+1}/{config.max_epochs} ---")
-        model.train()
-        
-        for i, batch in enumerate(train_loader):
-            loss = train_step(model, batch, optimizer, scheduler, device, config)
+            lr = optimizer.param_groups[0]['lr']
+            total_train_loss += loss.item()
             global_step += 1
             
-            if global_step % config.log_every_n_steps == 0:
-                log_training_metrics(
-                    model=model, loss=loss, optimizer=optimizer,
-                    epoch=epoch, step=global_step
+            pbar.set_postfix({'loss': loss.item(), 'lr': lr})
+            wandb.log({'train/step_loss': loss.item(), 'train/learning_rate': lr}, step=global_step)
+            
+        avg_train_loss = total_train_loss / len(train_loader)
+        
+        # Validation
+        model.eval()
+        total_val_loss = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                
+                logits = model(
+                    melody_tokens=batch['melody_tokens'],
+                    chord_tokens=batch['chord_input']
                 )
-                print(f"\rEpoch {epoch+1}, Step {global_step} | Loss: {loss:.4f}", end="")
+                
+                loss = nn.functional.cross_entropy(
+                    logits.reshape(-1, config['chord_vocab_size']),
+                    batch['chord_target'].reshape(-1)
+                )
+                total_val_loss += loss.item()
+        
+        avg_val_loss = total_val_loss / len(val_loader)
+        
+        print(f"\nEpoch {epoch+1} | Avg Train Loss: {avg_train_loss:.4f} | Avg Val Loss: {avg_val_loss:.4f}")
+        wandb.log({
+            'train/epoch_loss': avg_train_loss,
+            'valid/epoch_loss': avg_val_loss,
+            'train/epoch': epoch + 1
+        }, step=global_step)
 
-        # Validation at the end of the epoch
-        val_loss = validate(model, val_loader, device, config)
-        log_validation_metrics(loss=val_loss, epoch=epoch, step=global_step)
-        print(f"\nEpoch {epoch+1} | Validation Loss: {val_loss:.4f}")
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # Checkpointing and Early Stopping
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
             steps_without_improvement = 0
-            print("  New best validation loss! Saving checkpoint...")
+            print(f"  New best validation loss! Saving model artifact...")
             log_model_artifact(
                 model,
-                f"offline_teacher_epoch_{epoch+1}_loss_{val_loss:.2f}",
+                f"offline_teacher_epoch_{epoch+1}_loss_{avg_val_loss:.2f}",
                 tokenizer_info=tokenizer_info,
-                metadata={"val_loss": val_loss, "epoch": epoch+1}
+                metadata={"val_loss": avg_val_loss, "epoch": epoch+1, **config}
             )
         else:
             steps_without_improvement += 1
-            print(f"  Validation loss did not improve. Patience: {steps_without_improvement}/{config.early_stopping_patience}")
+            print(f"  Validation loss did not improve. Patience: {steps_without_improvement}/{config['early_stopping_patience']}")
 
-        # Check for early stopping
-        if steps_without_improvement >= config.early_stopping_patience:
-            print(f"\nStopping early after {config.early_stopping_patience} epochs with no improvement.")
+        if steps_without_improvement >= config['early_stopping_patience']:
+            print(f"\nStopping early after {steps_without_improvement} epochs with no improvement.")
             break
             
     print("\nTraining complete.")
@@ -146,60 +174,15 @@ def train(model: nn.Module,
         'final_epoch': epoch+1,
         'best_val_loss': best_val_loss
     })
-
-def main(config: TrainingConfig):
-    """Main entry point for training."""
-    run = init_wandb(config, name=f"offline_teacher_{wandb.util.generate_id()}", job_type="offline_training")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    train_loader = create_dataloader(
-        data_dir=Path(config.data_dir),
-        split="train",
-        batch_size=config.batch_size,
-        num_workers=config.num_workers,
-        sequence_length=config.max_sequence_length,
-        mode='offline'
-    )
-    
-    val_loader = create_dataloader(
-        data_dir=Path(config.data_dir),
-        split="valid",
-        batch_size=config.batch_size,
-        num_workers=config.num_workers,
-        sequence_length=config.max_sequence_length,
-        mode='offline'
-    )
-    
-    # Update config with vocab sizes from the dataset
-    dataset_info = train_loader.dataset.tokenizer_info
-    config.melody_vocab_size = dataset_info['melody_vocab_size']
-    config.chord_vocab_size = dataset_info['chord_vocab_size']
-
-    model = OfflineTeacherModel(
-        melody_vocab_size=config.melody_vocab_size,
-        chord_vocab_size=config.chord_vocab_size,
-        embed_dim=config.embed_dim,
-        num_heads=config.num_heads,
-        num_layers=config.num_layers,
-        dropout=config.dropout,
-        max_seq_length=config.max_sequence_length
-    ).to(device)
-
-    optimizer = Adafactor(
-        model.parameters(),
-        lr=config.learning_rate,
-        scale_parameter=False,
-        relative_step=False
-    )
-    
-    scheduler = get_warmup_schedule(optimizer, num_warmup_steps=config.warmup_steps)
-    
-    train(model, train_loader, val_loader, optimizer, scheduler, device, config, dataset_info)
-    
-    run.finish()
+    wandb.finish()
 
 if __name__ == "__main__":
-    parser = ArgumentParser()
-    parser.add_class_arguments(TrainingConfig, "config")
-    cfg = parser.parse_args()
-    main(config=cfg.config) 
+    parser = argparse.ArgumentParser(description="Train the Offline Teacher model.")
+    parser.add_argument("--config", required=True, help="Path to the YAML configuration file.")
+    
+    args = parser.parse_args()
+    
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+        
+    main(config=config) 

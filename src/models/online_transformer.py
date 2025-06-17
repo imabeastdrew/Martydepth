@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from src.training.config import TrainingConfig
 from typing import Optional
 
 class OnlineTransformer(nn.Module):

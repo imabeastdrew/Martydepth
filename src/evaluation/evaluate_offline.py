@@ -19,7 +19,6 @@ from src.evaluation.metrics import (
     calculate_harmony_metrics,
     calculate_synchronization_metrics,
     calculate_rhythm_diversity_metrics,
-    log_results_to_wandb,
 )
 from src.config.tokenization_config import CHORD_SILENCE_TOKEN
 

@@ -30,11 +30,13 @@ class FrameDataset(Dataset):
             data_dir: Path to the data directory containing train/valid/test splits
             split: Which split to load ('train', 'valid', or 'test')
             sequence_length: Length of each sequence
-            mode: 'online' for causal training or 'offline' for full context
+            mode: 'online' for causal training, 'offline' for full context, or 'contrastive' for reward model training.
         """
         self.data_dir = Path(data_dir)
         self.split = split
         self.sequence_length = sequence_length
+        if mode not in ['online', 'offline', 'contrastive']:
+            raise ValueError(f"Invalid mode: {mode}. Must be one of 'online', 'offline', 'contrastive'.")
         self.mode = mode
         
         # Point to the directory for the correct split
@@ -122,6 +124,18 @@ class FrameDataset(Dataset):
             'start_frame': sequence.start_frame
         }
     
+    def _get_contrastive_format(self, sequence: FrameSequence) -> Dict[str, torch.Tensor]:
+        """Get format for training the contrastive reward model."""
+        melody_tokens = torch.tensor(sequence.melody_tokens, dtype=torch.long)
+        chord_tokens = torch.tensor(sequence.chord_tokens, dtype=torch.long)
+        
+        # For the contrastive loss, we just need the melody and chord sequences.
+        return {
+            'melody_tokens': melody_tokens,
+            'chord_tokens': chord_tokens,
+            'song_id': sequence.song_id,
+        }
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
         Get a sequence by index by loading its individual pickle file.
@@ -135,8 +149,10 @@ class FrameDataset(Dataset):
         
         if self.mode == 'online':
             return self._get_online_format(sequence)
-        else:  # offline mode
+        elif self.mode == 'offline':
             return self._get_offline_format(sequence)
+        else:  # contrastive mode
+            return self._get_contrastive_format(sequence)
 
 def create_dataloader(data_dir: Path,
                      split: str = 'train',
@@ -155,7 +171,7 @@ def create_dataloader(data_dir: Path,
         shuffle: Whether to shuffle the sequences
         num_workers: Number of worker processes for loading
         sequence_length: Length of each sequence
-        mode: 'online' for causal training or 'offline' for full context
+        mode: 'online' for causal training, 'offline' for full context, or 'contrastive' for reward model training.
         
     Returns:
         DataLoader for the specified split
@@ -191,8 +207,8 @@ def main():
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Test both modes
-    for mode in ['online', 'offline']:
+    # Test all modes
+    for mode in ['online', 'offline', 'contrastive']:
         print(f"\nTesting {mode} mode...")
         dataloader = create_dataloader(
             data_dir=data_dir,
@@ -223,10 +239,14 @@ def main():
         if mode == 'online':
             print(f"Input tokens shape: {batch['input_tokens'].shape}")
             print(f"Target tokens shape: {batch['target_tokens'].shape}")
-        else:  # offline mode
+        elif mode == 'offline':  # offline mode
             print(f"Melody tokens shape: {batch['melody_tokens'].shape}")
             print(f"Chord input shape: {batch['chord_input'].shape}")
             print(f"Chord target shape: {batch['chord_target'].shape}")
+        else: # contrastive
+            print(f"Melody tokens shape: {batch['melody_tokens'].shape}")
+            print(f"Chord tokens shape: {batch['chord_tokens'].shape}")
+
         print(f"Device: {next(iter(batch.values())).device if isinstance(next(iter(batch.values())), torch.Tensor) else 'cpu'}")
 
 if __name__ == "__main__":
