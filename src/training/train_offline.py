@@ -90,40 +90,62 @@ def train(model: nn.Module,
           optimizer: torch.optim.Optimizer,
           scheduler: torch.optim.lr_scheduler.LRScheduler,
           device: torch.device,
-          config: TrainingConfig):
+          config: TrainingConfig,
+          tokenizer_info: dict):
     """Main training loop."""
     model.train()
     global_step = 0
     best_val_loss = float('inf')
+    steps_without_improvement = 0
     
-    train_iter = iter(train_loader)
-    while global_step < config.total_steps:
-        try:
-            batch = next(train_iter)
-        except StopIteration:
-            current_epoch = global_step // len(train_loader)
-            val_loss = validate(model, val_loader, device, config)
-            log_validation_metrics(loss=val_loss, epoch=current_epoch, step=global_step)
-            print(f"\nStep {global_step} | Validation Loss: {val_loss:.4f}")
+    print(f"\n--- Offline Training Info ---")
+    print(f"  Max epochs: {config.max_epochs}")
+    print(f"  Early stopping patience: {config.early_stopping_patience}")
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                print("  New best validation loss! Saving checkpoint...")
-                log_model_artifact(model, f"offline_teacher_step_{global_step}", metadata={"val_loss": val_loss})
-
-            train_iter = iter(train_loader)
-            batch = next(train_iter)
+    for epoch in range(config.max_epochs):
+        print(f"\n--- Epoch {epoch+1}/{config.max_epochs} ---")
+        model.train()
+        
+        for i, batch in enumerate(train_loader):
+            loss = train_step(model, batch, optimizer, scheduler, device, config)
+            global_step += 1
             
-        loss = train_step(model, batch, optimizer, scheduler, device, config)
-        
-        if global_step % config.log_every_n_steps == 0:
-            current_epoch = global_step // len(train_loader)
-            log_training_metrics(model=model, loss=loss, optimizer=optimizer, epoch=current_epoch, step=global_step)
-            print(f"\rStep {global_step}/{config.total_steps} | Loss: {loss:.4f}", end="")
-        
-        global_step += 1
-    
+            if global_step % config.log_every_n_steps == 0:
+                log_training_metrics(
+                    model=model, loss=loss, optimizer=optimizer,
+                    epoch=epoch, step=global_step
+                )
+                print(f"\rEpoch {epoch+1}, Step {global_step} | Loss: {loss:.4f}", end="")
+
+        # Validation at the end of the epoch
+        val_loss = validate(model, val_loader, device, config)
+        log_validation_metrics(loss=val_loss, epoch=epoch, step=global_step)
+        print(f"\nEpoch {epoch+1} | Validation Loss: {val_loss:.4f}")
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            steps_without_improvement = 0
+            print("  New best validation loss! Saving checkpoint...")
+            log_model_artifact(
+                model,
+                f"offline_teacher_epoch_{epoch+1}_loss_{val_loss:.2f}",
+                tokenizer_info=tokenizer_info,
+                metadata={"val_loss": val_loss, "epoch": epoch+1}
+            )
+        else:
+            steps_without_improvement += 1
+            print(f"  Validation loss did not improve. Patience: {steps_without_improvement}/{config.early_stopping_patience}")
+
+        # Check for early stopping
+        if steps_without_improvement >= config.early_stopping_patience:
+            print(f"\nStopping early after {config.early_stopping_patience} epochs with no improvement.")
+            break
+            
     print("\nTraining complete.")
+    wandb.run.summary.update({
+        'final_epoch': epoch+1,
+        'best_val_loss': best_val_loss
+    })
 
 def main(config: TrainingConfig):
     """Main entry point for training."""
@@ -172,7 +194,7 @@ def main(config: TrainingConfig):
     
     scheduler = get_warmup_schedule(optimizer, num_warmup_steps=config.warmup_steps)
     
-    train(model, train_loader, val_loader, optimizer, scheduler, device, config)
+    train(model, train_loader, val_loader, optimizer, scheduler, device, config, dataset_info)
     
     run.finish()
 

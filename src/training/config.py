@@ -28,11 +28,12 @@ class TrainingConfig:
     # Training parameters
     learning_rate: float = 1e-3
     weight_decay: float = 0.01
-    max_epochs: int = 100
-    total_steps: Optional[int] = 50000
+    max_epochs: int = 50
+    total_steps: Optional[int] = None
     warmup_steps: int = 1000
     gradient_clip_val: float = 1.0
-    log_every_n_steps: int = 100
+    log_every_n_steps: int = 1000
+    early_stopping_patience: int = 10 
     
     # Weights & Biases parameters
     wandb_project: str = "martydepth"

@@ -57,72 +57,68 @@ def train(model: nn.Module,
           device: torch.device,
           config: TrainingConfig,
           tokenizer_info: dict):
-    """Training loop with step-based training and validation"""
+    """Training loop with epoch-based training and validation"""
     model.train()
     
     global_step = 0
     best_val_loss = float('inf')
-    steps_per_epoch = len(train_loader)
+    steps_without_improvement = 0
     
     print(f"\nTraining Info:")
-    print(f"  Total steps: {config.total_steps:,}")
-    print(f"  Warmup steps: {config.warmup_steps:,}")
-    print(f"  Steps per epoch: {steps_per_epoch}")
-    print(f"  Estimated epochs: {config.total_steps / steps_per_epoch:.1f}")
-    
-    train_iter = iter(train_loader)
-    current_epoch = 0
-    
-    while global_step < config.total_steps:
-        try:
-            batch = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            batch = next(train_iter)
-            current_epoch += 1
+    print(f"  Max epochs: {config.max_epochs}")
+    print(f"  Batch size: {config.batch_size}")
+    print(f"  Early stopping patience: {config.early_stopping_patience}")
+
+    for epoch in range(config.max_epochs):
+        print(f"\n--- Epoch {epoch+1}/{config.max_epochs} ---")
+        model.train()
+        
+        for i, batch in enumerate(train_loader):
+            loss = train_step(model, batch, optimizer, scheduler, device, config)
+            global_step += 1
             
-            # Validate at epoch boundaries
-            val_loss = validate(model, val_loader, device)
-            log_validation_metrics(loss=val_loss, epoch=current_epoch, step=global_step)
-            print(f"\nEpoch {current_epoch} Validation:")
-            print(f"  Loss: {val_loss:.4f}")
-            
-            # Save if best
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                print("  New best validation loss! Saving checkpoint...")
-                log_model_artifact(
-                    model,
-                    f"model_step_{global_step}",
-                    tokenizer_info=tokenizer_info,
-                    metadata={"val_loss": val_loss}
+            if global_step % config.log_every_n_steps == 0:
+                log_training_metrics(
+                    model=model,
+                    loss=loss,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    step=global_step
                 )
+                print(f"\rEpoch {epoch+1}, Step {global_step} | Loss: {loss:.4f}", end="")
+
+        # --- Validation at the end of the epoch ---
+        val_loss = validate(model, val_loader, device)
+        log_validation_metrics(loss=val_loss, epoch=epoch, step=global_step)
+        print(f"\nEpoch {epoch+1} Validation:")
+        print(f"  Loss: {val_loss:.4f}")
         
-        # Training step
-        loss = train_step(model, batch, optimizer, scheduler, device, config)
-        
-        # Log metrics
-        log_training_metrics(
-            model=model,
-            loss=loss,
-            optimizer=optimizer,
-            epoch=current_epoch,
-            step=global_step
-        )
-        
-        global_step += 1
-        
-        if global_step % 100 == 0:
-            print(f"\rStep {global_step}/{config.total_steps} "
-                  f"({global_step/config.total_steps*100:.1f}%) "
-                  f"Loss: {loss:.4f}", end="")
+        # Save if best
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            steps_without_improvement = 0
+            print("  New best validation loss! Saving checkpoint...")
+            log_model_artifact(
+                model,
+                f"model_epoch_{epoch+1}_loss_{val_loss:.2f}",
+                tokenizer_info=tokenizer_info,
+                metadata={"val_loss": val_loss, "epoch": epoch+1}
+            )
+        else:
+            steps_without_improvement += 1
+            print(f"  Validation loss did not improve. Patience: {steps_without_improvement}/{config.early_stopping_patience}")
+
+        # Check for early stopping
+        if steps_without_improvement >= config.early_stopping_patience:
+            print(f"\nStopping early after {config.early_stopping_patience} epochs with no improvement.")
+            break
     
     print("\n\nTraining complete!")
-    print(f"  Steps completed: {global_step:,}")
+    print(f"  Epochs completed: {epoch+1}")
     print(f"  Best validation loss: {best_val_loss:.4f}")
     
     wandb.run.summary.update({
-        'final_step': global_step,
+        'final_epoch': epoch+1,
         'best_val_loss': best_val_loss
     })
 
