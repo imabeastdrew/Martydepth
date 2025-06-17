@@ -192,7 +192,7 @@ class OfflineTeacherModel(nn.Module):
         # Store configuration
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.max_sequence_length = max_seq_length
+        self.max_seq_length = max_seq_length
         
         # Embeddings
         self.embeddings = OfflineTeacherEmbeddings(
@@ -248,22 +248,19 @@ class OfflineTeacherModel(nn.Module):
         melody_embed = self.embeddings.encode_melody(melody_tokens)
         chord_embed = self.embeddings.encode_chords(chord_tokens)
         
-        # 2. Create causal mask for the decoder
-        chord_seq_length = chord_tokens.size(1)
-        decoder_causal_mask = self.create_causal_mask(chord_seq_length, chord_tokens.device)
+        # 2. Create masks
+        causal_mask = self.create_causal_mask(chord_tokens.size(1), chord_tokens.device)
         
-        # 3. Pass through the transformer
-        # Note: src_key_padding_mask is for encoder, memory_key_padding_mask is for decoder cross-attention
-        transformer_output = self.transformer(
+        # 3. Transformer forward pass
+        output = self.transformer(
             src=melody_embed,
             tgt=chord_embed,
-            tgt_mask=decoder_causal_mask,
-            src_key_padding_mask=melody_mask,
-            memory_key_padding_mask=melody_mask
+            tgt_mask=causal_mask,
+            src_key_padding_mask=melody_mask
         )
         
-        # 4. Project to vocabulary
-        logits = self.output_head(transformer_output)
+        # 4. Output projection
+        logits = self.output_head(output)
         
         return logits
 
