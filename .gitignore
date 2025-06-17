@@ -75,3 +75,6 @@ checkpoints/
 *.out
 *.err
 src/training/scripts/*.sh
+
+# New line for the new file
+/src/evaluation/scripts/evaluate_parallel.sbatch
