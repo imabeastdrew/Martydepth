@@ -8,3 +8,4 @@ pandas>=2.0.0
 pathlib>=1.0.1
 transformers
 jsonargparse[signatures]
+scipy

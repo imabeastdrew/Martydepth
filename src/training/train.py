@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import Adafactor
-from torch.optim.lr_scheduler import LambdaLR
 import wandb
 from jsonargparse import ArgumentParser
 
@@ -19,19 +18,12 @@ from src.data.dataset import create_dataloader
 from src.training.config import TrainingConfig
 from src.training.utils.logging import init_wandb, log_model_artifact
 from src.training.utils.metrics import log_training_metrics, log_validation_metrics
-
-def get_warmup_schedule(optimizer, num_warmup_steps):
-    """Create warmup schedule"""
-    def lr_lambda(step):
-        if step < num_warmup_steps:
-            return float(step) / float(max(1, num_warmup_steps))  # Linear warmup
-        return 1.0  # Full learning rate
-    return LambdaLR(optimizer, lr_lambda)
+from src.training.utils.schedulers import get_warmup_schedule
 
 def train_step(model: nn.Module,
                batch: dict,
                optimizer: torch.optim.Optimizer,
-               scheduler: torch.optim.lr_scheduler.LRScheduler,
+               scheduler,
                device: torch.device,
                config: TrainingConfig) -> float:
     """Single training step with interleaved sequence prediction"""
@@ -63,7 +55,8 @@ def train(model: nn.Module,
           optimizer: torch.optim.Optimizer,
           scheduler: torch.optim.lr_scheduler.LRScheduler,
           device: torch.device,
-          config: TrainingConfig):
+          config: TrainingConfig,
+          tokenizer_info: dict):
     """Training loop with step-based training and validation"""
     model.train()
     
@@ -101,6 +94,7 @@ def train(model: nn.Module,
                 log_model_artifact(
                     model,
                     f"model_step_{global_step}",
+                    tokenizer_info=tokenizer_info,
                     metadata={"val_loss": val_loss}
                 )
         
@@ -225,7 +219,8 @@ def main(config: TrainingConfig):
         optimizer=optimizer,
         scheduler=scheduler,
         device=device,
-        config=config
+        config=config,
+        tokenizer_info=dataset_info
     )
     
     # Cleanup

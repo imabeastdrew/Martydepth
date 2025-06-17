@@ -10,6 +10,7 @@ import torch
 from typing import Any, Dict, Optional
 from wandb.util import generate_id
 import torch.nn as nn
+import json
 
 from src.training.config import TrainingConfig
 
@@ -47,6 +48,7 @@ def init_wandb(config: "TrainingConfig",
 
 def log_model_artifact(model: nn.Module, 
                        name: str, 
+                       tokenizer_info: Dict,
                        metadata: Optional[Dict[str, Any]] = None):
     """
     Save model checkpoint and log it as a W&B artifact.
@@ -59,8 +61,13 @@ def log_model_artifact(model: nn.Module,
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     # Save model state
-    checkpoint_path = checkpoint_dir / f"{name}.pth"
-    torch.save(model.state_dict(), checkpoint_path)
+    model_path = checkpoint_dir / "model.pth"
+    torch.save(model.state_dict(), model_path)
+    
+    # Save tokenizer info
+    tokenizer_path = checkpoint_dir / "tokenizer_info.json"
+    with open(tokenizer_path, 'w') as f:
+        json.dump(tokenizer_info, f, indent=4)
     
     # Create artifact
     artifact = wandb.Artifact(
@@ -68,7 +75,8 @@ def log_model_artifact(model: nn.Module,
         type="model",
         metadata=metadata
     )
-    artifact.add_file(str(checkpoint_path))
+    artifact.add_file(str(model_path))
+    artifact.add_file(str(tokenizer_path))
     
     # Log artifact
     wandb.log_artifact(artifact)
