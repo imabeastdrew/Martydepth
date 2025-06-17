@@ -91,43 +91,49 @@ def generate_online(model: OnlineTransformer,
                     top_k: int = 50) -> list:
     """
     Generate sequences by providing the melody and predicting the chords.
+    This function is optimized to process entire batches at once.
     """
     model.eval()
     generated_sequences = []
 
-    # Get chord start token index for initial prompt
     chord_start_token_idx = tokenizer_info['melody_vocab_size']
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating online sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
-            
-            for i in range(melody_tokens.shape[0]): # Process each sequence in the batch
-                single_melody = melody_tokens[i]
+            batch_size = melody_tokens.shape[0]
+            seq_length = melody_tokens.shape[1]
+
+            # Start with a chord token prompt for the whole batch
+            generated_so_far = torch.full((batch_size, 1), chord_start_token_idx, dtype=torch.long, device=device)
+
+            for t in range(seq_length):
+                # Predict next token (which should be a chord)
+                logits = model(generated_so_far)[:, -1, :] / temperature
                 
-                # Start with a single chord token prompt
-                generated_so_far = [chord_start_token_idx]
-                
-                for melody_token in single_melody:
-                    input_ids = torch.tensor(generated_so_far, dtype=torch.long, device=device).unsqueeze(0)
-                    
-                    # Predict next token (which should be a chord)
-                    logits = model(input_ids)[:, -1, :] / temperature
-                    
-                    # Top-k
-                    if top_k > 0:
-                        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-                        logits[indices_to_remove] = -float('inf')
-                    
-                    # Sample chord
-                    probs = torch.softmax(logits, dim=-1)
-                    next_chord_token = torch.multinomial(probs, num_samples=1).item()
-                    
-                    # Append the generated chord and the given melody token
-                    generated_so_far.append(next_chord_token)
-                    generated_so_far.append(melody_token.item())
-                    
-                generated_sequences.append(np.array(generated_so_far))
+                # Top-k filtering
+                if top_k > 0:
+                    top_k_logits, top_k_indices = torch.topk(logits, top_k)
+                    # Create a mask for values to keep
+                    mask = torch.full_like(logits, -float('inf'))
+                    mask.scatter_(1, top_k_indices, top_k_logits)
+                    logits = mask
+
+                # Sample the next chord token
+                probs = torch.softmax(logits, dim=-1)
+                next_chord_tokens = torch.multinomial(probs, num_samples=1)
+
+                # Append the generated chord and the next ground-truth melody token
+                current_melody_tokens = melody_tokens[:, t].unsqueeze(1)
+                generated_so_far = torch.cat([generated_so_far, next_chord_tokens, current_melody_tokens], dim=1)
+
+            # Collect results for the batch
+            # The generated sequence includes our prompt and the melody, so we extract only the generated part
+            for i in range(batch_size):
+                # The final sequence will be [prompt, c1, m1, c2, m2, ...]
+                # We want to store the full interleaved sequence for metrics
+                full_sequence = generated_so_far[i].cpu().numpy()
+                generated_sequences.append(full_sequence)
 
     print(f"\nGenerated {len(generated_sequences)} sequences in online mode.")
     return generated_sequences

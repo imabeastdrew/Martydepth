@@ -19,8 +19,31 @@ from src.evaluation.metrics import (
     calculate_harmony_metrics,
     calculate_synchronization_metrics,
     calculate_rhythm_diversity_metrics,
+    log_results_to_wandb,
 )
 from src.config.tokenization_config import CHORD_SILENCE_TOKEN
+
+def log_results_to_wandb(args, metrics, sequences, tokenizer_info):
+    """Logs evaluation results and generated samples to W&B."""
+    run_name = f"eval_offline_{args.eval_id}_{args.shard_id}"
+    run = wandb.init(
+        project="martydepth",
+        job_type="evaluation",
+        name=run_name,
+        config=vars(args),
+        group=f"eval_offline_{args.eval_id}" # Group runs from the same evaluation
+    )
+    
+    model_artifact = run.use_artifact(args.artifact_path, type='model')
+    run.summary.update(metrics)
+    
+    table = wandb.Table(columns=["id", "generated_sequence"])
+    for i, seq in enumerate(sequences[:10]):
+        table.add_data(i, str(seq))
+    
+    run.log({"generated_samples": table})
+    run.finish()
+    print(f"Logged evaluation results to W&B run: {run.url}")
 
 def load_model_from_wandb(artifact_path: str, device: torch.device):
     """
@@ -66,6 +89,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.eval()
         
+    print(f"🎵 Offline Teacher Model Initialized:\n  Architecture: {config.num_layers}E + {config.num_layers}D\n  Embed dimension: {config.embed_dim}\n  Attention heads: {config.num_heads}\n  Total parameters: {total_params:,}")
     print("Offline model loaded successfully.")
     return model, config, tokenizer_info
 
@@ -74,7 +98,7 @@ def generate_offline(model: OfflineTeacherModel,
                      device: torch.device) -> list:
     """
     Generate chord sequences for given melodies using the offline model.
-    The generation loop is handled manually here.
+    This function is optimized to process entire batches at once.
     """
     model.eval()
     generated_sequences = []
@@ -82,34 +106,36 @@ def generate_offline(model: OfflineTeacherModel,
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
+            batch_size = melody_tokens.shape[0]
+            seq_length = melody_tokens.shape[1]
+
+            # 1. Encode the entire batch of melodies at once
+            melody_embed = model.embeddings.encode_melody(melody_tokens)
+            memory = model.transformer.encoder(melody_embed)
+
+            # 2. Initialize the decoder input for the whole batch
+            decoder_input = torch.full((batch_size, 1), CHORD_SILENCE_TOKEN, dtype=torch.long, device=device)
+
+            # 3. Autoregressively generate chords for the whole batch
+            for _ in range(seq_length):
+                chord_embed = model.embeddings.encode_chords(decoder_input)
+                causal_mask = model.create_causal_mask(decoder_input.size(1), device)
+                
+                decoder_output = model.transformer.decoder(chord_embed, memory, tgt_mask=causal_mask)
+                logits = model.output_head(decoder_output[:, -1, :])
+                
+                # Greedy decoding for the entire batch
+                next_tokens = logits.argmax(dim=-1).unsqueeze(1)
+                decoder_input = torch.cat([decoder_input, next_tokens], dim=1)
             
-            for i in range(melody_tokens.shape[0]):
-                single_melody = melody_tokens[i].unsqueeze(0)
-                
-                # Encode the melody once to get the memory
-                melody_embed = model.embeddings.encode_melody(single_melody)
-                memory = model.transformer.encoder(melody_embed)
-                
-                # Start with the CHORD_SILENCE_TOKEN
-                decoder_input = torch.full((1, 1), CHORD_SILENCE_TOKEN, dtype=torch.long, device=device)
-                
-                # Generate one chord for each melody token
-                for _ in range(single_melody.size(1)):
-                    chord_embed = model.embeddings.encode_chords(decoder_input)
-                    causal_mask = model.create_causal_mask(decoder_input.size(1), device)
-                    
-                    decoder_output = model.transformer.decoder(chord_embed, memory, tgt_mask=causal_mask)
-                    logits = model.output_head(decoder_output[:, -1, :])
-                    
-                    # Greedy decoding
-                    next_token = logits.argmax(dim=-1).unsqueeze(1)
-                    decoder_input = torch.cat([decoder_input, next_token], dim=1)
-                
-                # Interleave results for metrics
-                # Exclude the starting silence token from the generated chords
-                final_chords = decoder_input.squeeze(0)[1:].cpu().numpy()
-                final_melody = single_melody.squeeze(0).cpu().numpy()
-                
+            # 4. Process and collect results for the batch
+            # Exclude the starting silence token from the generated chords
+            final_chords_batch = decoder_input[:, 1:].cpu().numpy()
+            final_melody_batch = melody_tokens.cpu().numpy()
+
+            for i in range(batch_size):
+                final_chords = final_chords_batch[i]
+                final_melody = final_melody_batch[i]
                 num_tokens = min(len(final_chords), len(final_melody))
                 
                 interleaved = np.empty(num_tokens * 2, dtype=np.int64)
@@ -145,18 +171,21 @@ def main(args):
     sync_metrics = calculate_synchronization_metrics(generated_sequences, tokenizer_info)
     rhythm_metrics = calculate_rhythm_diversity_metrics(generated_sequences, tokenizer_info)
     
+    all_metrics = {**harmony_metrics, **sync_metrics, **rhythm_metrics}
+    
     print("\n--- Offline Evaluation Results ---")
     print(f"Artifact: {args.artifact_path}")
-    print(f"Harmony: {harmony_metrics}")
-    print(f"Synchronization: {sync_metrics}")
-    print(f"Rhythm Diversity: {rhythm_metrics}")
+    for key, value in all_metrics.items():
+        print(f"  {key}: {value:.4f}")
     print("---------------------------------")
+    
+    log_results_to_wandb(args, all_metrics, generated_sequences, tokenizer_info)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate a trained OfflineTeacher model.")
-    parser.add_argument("artifact_path", type=str, help="W&B artifact path (entity/project/artifact_name:version)")
-    parser.add_argument("data_dir", type=str, help="Path to the data directory with test split.")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for generation (1 is recommended).")
+    parser = argparse.ArgumentParser(description="Evaluate an offline teacher model.")
+    parser.add_argument("artifact_path", type=str, help="W&B artifact path for the model (e.g., entity/project/model:version).")
+    parser.add_argument("data_dir", type=str, help="Directory containing the processed test data.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for evaluation.")
     
     args = parser.parse_args()
     main(args) 
