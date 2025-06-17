@@ -11,6 +11,7 @@ import tempfile
 import json
 import numpy as np
 from typing import Dict
+from tqdm import tqdm
 
 from src.models.offline_teacher import OfflineTeacherModel
 from src.data.dataset import create_dataloader
@@ -62,7 +63,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
             max_seq_length=config.max_sequence_length
         ).to(device)
         
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.eval()
         
     print("Offline model loaded successfully.")
@@ -79,7 +80,7 @@ def generate_offline(model: OfflineTeacherModel,
     generated_sequences = []
     
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="Generating offline sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
             
             for i in range(melody_tokens.shape[0]):
@@ -116,7 +117,7 @@ def generate_offline(model: OfflineTeacherModel,
                 interleaved[1::2] = final_melody[:num_tokens]
                 generated_sequences.append(interleaved)
                 
-    print(f"Generated {len(generated_sequences)} sequences in offline mode.")
+    print(f"\nGenerated {len(generated_sequences)} sequences in offline mode.")
     return generated_sequences
 
 def main(args):

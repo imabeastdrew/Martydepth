@@ -11,6 +11,7 @@ import tempfile
 import json
 import numpy as np
 from typing import Dict
+from tqdm import tqdm
 
 from src.models.online_transformer import OnlineTransformer
 from src.data.dataset import create_dataloader
@@ -76,7 +77,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         ).to(device)
         
         # Load state dict
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.eval()
         
     print("Model loaded successfully.")
@@ -98,7 +99,7 @@ def generate_online(model: OnlineTransformer,
     chord_start_token_idx = tokenizer_info['melody_vocab_size']
 
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="Generating online sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
             
             for i in range(melody_tokens.shape[0]): # Process each sequence in the batch
@@ -128,7 +129,7 @@ def generate_online(model: OnlineTransformer,
                     
                 generated_sequences.append(np.array(generated_so_far))
 
-    print(f"Generated {len(generated_sequences)} sequences in online mode.")
+    print(f"\nGenerated {len(generated_sequences)} sequences in online mode.")
     return generated_sequences
 
 def main(args):
