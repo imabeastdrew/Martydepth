@@ -144,9 +144,7 @@ def create_dataloader(data_dir: Path,
                      shuffle: bool = True,
                      num_workers: int = 4,
                      sequence_length: int = 256,
-                     mode: str = 'online',
-                     num_shards: Optional[int] = None,
-                     shard_id: Optional[int] = None) -> torch.utils.data.DataLoader:
+                     mode: str = 'online') -> torch.utils.data.DataLoader:
     """
     Create a DataLoader for the frame sequences
     
@@ -158,8 +156,6 @@ def create_dataloader(data_dir: Path,
         num_workers: Number of worker processes for loading
         sequence_length: Length of each sequence
         mode: 'online' for causal training or 'offline' for full context
-        num_shards: Optional total number of shards to split the data into
-        shard_id: Optional id for the current shard
         
     Returns:
         DataLoader for the specified split
@@ -177,24 +173,6 @@ def create_dataloader(data_dir: Path,
         sequence_length=sequence_length,
         mode=mode
     )
-    
-    # Sharding for parallel evaluation
-    if num_shards is not None and shard_id is not None:
-        print(f"  Using data shard {shard_id}/{num_shards}")
-        total_size = len(dataset)
-        indices = list(range(total_size))
-        
-        # Get indices for the current shard
-        shard_size = total_size // num_shards
-        start_index = shard_id * shard_size
-        end_index = (shard_id + 1) * shard_size
-        
-        # On the last shard, include any remainder
-        if shard_id == num_shards - 1:
-            end_index = total_size
-            
-        shard_indices = indices[start_index:end_index]
-        dataset = torch.utils.data.Subset(dataset, shard_indices)
     
     return torch.utils.data.DataLoader(
         dataset,

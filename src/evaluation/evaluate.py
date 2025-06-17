@@ -21,33 +21,6 @@ from src.evaluation.metrics import (
     calculate_rhythm_diversity_metrics,
 )
 
-def log_results_to_wandb(args, metrics, sequences, tokenizer_info):
-    """Logs evaluation results and generated samples to W&B."""
-    run_name = f"eval_online_{args.eval_id}_{args.shard_id}"
-    run = wandb.init(
-        project="martydepth",
-        job_type="evaluation",
-        name=run_name,
-        config=vars(args),
-        group=f"eval_online_{args.eval_id}" # Group runs from the same evaluation
-    )
-    
-    # Log the input artifact
-    model_artifact = run.use_artifact(args.artifact_path, type='model')
-    
-    # Log the metrics
-    run.summary.update(metrics)
-    
-    # Create a table of generated examples
-    table = wandb.Table(columns=["id", "generated_sequence"])
-    for i, seq in enumerate(sequences[:10]): # Log first 10 examples
-        table.add_data(i, str(seq))
-    
-    run.log({"generated_samples": table})
-    
-    run.finish()
-    print(f"Logged evaluation results to W&B run: {run.url}")
-
 def load_model_from_wandb(artifact_path: str, device: torch.device):
     """
     Loads a model and its configuration from a W&B artifact.
@@ -179,9 +152,7 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=0, # Easier for local debugging
         sequence_length=config.max_sequence_length,
-        mode='offline', # Get separate melody and chord tracks
-        num_shards=args.num_shards,
-        shard_id=args.shard_id
+        mode='offline' # Get separate melody and chord tracks
     )
     
     # Generate sequences
@@ -199,17 +170,13 @@ def main(args):
     sync_metrics = calculate_synchronization_metrics(generated_sequences, tokenizer_info)
     rhythm_metrics = calculate_rhythm_diversity_metrics(generated_sequences, tokenizer_info)
     
-    all_metrics = {**harmony_metrics, **sync_metrics, **rhythm_metrics}
-    
     # Print results
-    print("\n--- Online Evaluation Results ---")
-    print(f"Artifact: {args.artifact_path}")
-    for key, value in all_metrics.items():
-        print(f"  {key}: {value:.4f}")
+    print("\n--- Evaluation Results ---")
+    print(f"Run: {args.artifact_path}")
+    print(f"Harmony: {harmony_metrics}")
+    print(f"Synchronization: {sync_metrics}")
+    print(f"Rhythm Diversity: {rhythm_metrics}")
     print("--------------------------")
-    
-    # Log to W&B
-    log_results_to_wandb(args, all_metrics, generated_sequences, tokenizer_info)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate a trained OnlineTransformer model.")
@@ -218,9 +185,6 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size for generation (1 is recommended).")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k filtering")
-    parser.add_argument("--num_shards", type=int, default=1, help="Total number of shards to split the test set into.")
-    parser.add_argument("--shard_id", type=int, default=0, help="The ID of the shard to process (0-indexed).")
-    parser.add_argument("--eval_id", type=str, default=lambda: wandb.util.generate_id(), help="Unique ID for the evaluation run.")
     
     args = parser.parse_args()
     main(args) 
