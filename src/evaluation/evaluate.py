@@ -13,6 +13,7 @@ import numpy as np
 from typing import Dict
 
 from src.models.online_transformer import OnlineTransformer
+from src.data.dataset import create_dataloader
 from src.evaluation.metrics import (
     calculate_harmony_metrics,
     calculate_synchronization_metrics,
@@ -81,53 +82,53 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
     print("Model loaded successfully.")
     return model, config, tokenizer_info
 
-def generate(model: OnlineTransformer,
-             tokenizer_info: Dict,
-             device: torch.device,
-             num_sequences: int = 10,
-             max_length: int = 512,
-             prompt: list = None,
-             temperature: float = 1.0,
-             top_k: int = 50) -> list:
+def generate_online(model: OnlineTransformer,
+                    dataloader: torch.utils.data.DataLoader,
+                    tokenizer_info: Dict,
+                    device: torch.device,
+                    temperature: float = 1.0,
+                    top_k: int = 50) -> list:
     """
-    Generate sequences from the model using top-k sampling.
+    Generate sequences by providing the melody and predicting the chords.
     """
     model.eval()
     generated_sequences = []
-    
-    # Use a default prompt if none is provided
-    # A single chord token to start.
-    # The first token should be a chord token, let's pick one from the vocab.
-    # A common way is to start with a common chord, e.g. C major.
-    # For now, let's just pick a valid token index.
-    # Chord tokens start after melody tokens. Melody vocab size is the offset.
+
+    # Get chord start token index for initial prompt
     chord_start_token_idx = tokenizer_info['melody_vocab_size']
-    if prompt is None:
-        prompt = [chord_start_token_idx] 
 
     with torch.no_grad():
-        for _ in range(num_sequences):
-            input_ids = torch.tensor(prompt, dtype=torch.long, device=device).unsqueeze(0)
+        for batch in dataloader:
+            melody_tokens = batch['melody_tokens'].to(device)
             
-            for _ in range(max_length - len(prompt)):
-                # Get logits
-                logits = model(input_ids)[:, -1, :] / temperature
+            for i in range(melody_tokens.shape[0]): # Process each sequence in the batch
+                single_melody = melody_tokens[i]
                 
-                # Apply top-k filtering
-                if top_k > 0:
-                    indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-                    logits[indices_to_remove] = -float('inf')
+                # Start with a single chord token prompt
+                generated_so_far = [chord_start_token_idx]
                 
-                # Sample next token
-                probs = torch.softmax(logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-                # Append to sequence
-                input_ids = torch.cat([input_ids, next_token], dim=1)
+                for melody_token in single_melody:
+                    input_ids = torch.tensor(generated_so_far, dtype=torch.long, device=device).unsqueeze(0)
+                    
+                    # Predict next token (which should be a chord)
+                    logits = model(input_ids)[:, -1, :] / temperature
+                    
+                    # Top-k
+                    if top_k > 0:
+                        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+                        logits[indices_to_remove] = -float('inf')
+                    
+                    # Sample chord
+                    probs = torch.softmax(logits, dim=-1)
+                    next_chord_token = torch.multinomial(probs, num_samples=1).item()
+                    
+                    # Append the generated chord and the given melody token
+                    generated_so_far.append(next_chord_token)
+                    generated_so_far.append(melody_token.item())
+                    
+                generated_sequences.append(np.array(generated_so_far))
 
-            generated_sequences.append(input_ids.squeeze(0).cpu().numpy())
-            
-    print(f"Generated {len(generated_sequences)} sequences.")
+    print(f"Generated {len(generated_sequences)} sequences in online mode.")
     return generated_sequences
 
 def main(args):
@@ -142,14 +143,23 @@ def main(args):
     
     # Load model
     model, config, tokenizer_info = load_model_from_wandb(args.artifact_path, device)
+
+    # Create test dataloader (offline mode to get melody and chords separately)
+    test_loader = create_dataloader(
+        data_dir=Path(args.data_dir),
+        split="test",
+        batch_size=args.batch_size,
+        num_workers=0, # Easier for local debugging
+        sequence_length=config.max_sequence_length,
+        mode='offline' # Get separate melody and chord tracks
+    )
     
     # Generate sequences
-    generated_sequences = generate(
+    generated_sequences = generate_online(
         model=model,
+        dataloader=test_loader,
         tokenizer_info=tokenizer_info,
         device=device,
-        num_sequences=args.num_sequences,
-        max_length=args.max_length,
         temperature=args.temperature,
         top_k=args.top_k
     )
@@ -170,8 +180,8 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate a trained OnlineTransformer model.")
     parser.add_argument("artifact_path", type=str, help="W&B artifact path (entity/project/artifact_name:version)")
-    parser.add_argument("--num_sequences", type=int, default=10, help="Number of sequences to generate")
-    parser.add_argument("--max_length", type=int, default=512, help="Max length of generated sequences")
+    parser.add_argument("data_dir", type=str, help="Path to the data directory with test split.")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for generation (1 is recommended).")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k filtering")
     

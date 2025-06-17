@@ -26,11 +26,11 @@ class TrainingConfig:
     chord_vocab_size: Optional[int] = None
     
     # Training parameters
-    learning_rate: float = 1e-4
+    learning_rate: float = 1e-3
     weight_decay: float = 0.01
     max_epochs: int = 100
-    total_steps: Optional[int] = 500000
-    warmup_steps: int = 2000
+    total_steps: Optional[int] = 50000
+    warmup_steps: int = 1000
     gradient_clip_val: float = 1.0
     log_every_n_steps: int = 100
     
