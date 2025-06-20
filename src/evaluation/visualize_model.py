@@ -5,7 +5,20 @@ A collection of functions for visualizing and interpreting models.
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
+import random
+import argparse
+from pathlib import Path
+import json
+import wandb
+import tempfile
 
+# Local application imports
+from src.data.dataset import create_dataloader
+from src.models.contrastive_reward_model import ContrastiveRewardModel
+from src.models.online_transformer import OnlineTransformer
+
+
+# Optional imports
 try:
     import shap
 except ImportError:
@@ -18,6 +31,8 @@ except ImportError:
     print("torchviz not found. Please run 'pip install torchviz' to install it.")
     make_dot = None
 
+# --- Visualization and Inspection Functions ---
+
 def plot_attention_heatmap(model, dataloader, device, tokenizer_info, save_path="attention_heatmap.png"):
     """
     Generates and saves a heatmap of the decoder-encoder attention
@@ -25,43 +40,30 @@ def plot_attention_heatmap(model, dataloader, device, tokenizer_info, save_path=
     """
     model.eval()
     
-    # Get a single batch from the dataloader
     batch = next(iter(dataloader))
     melody_tokens = batch['melody_tokens'].to(device)
     chord_tokens = batch['chord_tokens'].to(device)
 
     with torch.no_grad():
-        # This requires the model's forward pass to return attention scores.
-        # We will assume a 'get_attention' method exists or can be added.
-        # This is a common pattern for interpretability.
         try:
             # Assumes model.get_attention(mel, chd) returns cross-attention scores
             cross_attentions = model.get_attention(melody_tokens, chord_tokens)
         except AttributeError:
             print("Model does not have a 'get_attention' method. Cannot visualize attention.")
-            print("Please modify your model to return attention scores from its forward pass.")
             # Create a dummy attention for demonstration purposes
             seq_len_dec = chord_tokens.shape[1]
             seq_len_enc = melody_tokens.shape[1]
-            # Attention shape: [num_layers, batch_size, num_heads, decoder_seq_len, encoder_seq_len]
             num_layers = getattr(model, "num_layers", 1)
             num_heads = getattr(model, "num_heads", 1)
             batch_size = melody_tokens.shape[0]
             dummy_attention = torch.rand(num_layers, batch_size, num_heads, seq_len_dec, seq_len_enc)
             cross_attentions = [layer_attention for layer_attention in dummy_attention]
 
-
-    # Visualize the attention from the last layer for the first item in the batch
-    # Attention shape: (batch_size, num_heads, decoder_seq_len, encoder_seq_len)
     attention = cross_attentions[-1][0].cpu().numpy()
-    
-    # Average attention across all heads
     avg_attention = np.mean(attention, axis=0)
 
-    # Create plot
     fig, ax = plt.subplots(figsize=(12, 10))
     im = ax.imshow(avg_attention, cmap='viridis', aspect='auto')
-
     fig.colorbar(im, ax=ax)
     
     melody_id_to_token = {v: k for k, v in tokenizer_info['melody_token_to_id'].items()}
@@ -72,10 +74,8 @@ def plot_attention_heatmap(model, dataloader, device, tokenizer_info, save_path=
 
     ax.set_xticks(np.arange(len(input_tokens)))
     ax.set_yticks(np.arange(len(output_tokens)))
-    
     ax.set_xticklabels(input_tokens, rotation=90, fontsize=8)
     ax.set_yticklabels(output_tokens, fontsize=8)
-    
     ax.set_xlabel("Input Melody Tokens")
     ax.set_ylabel("Predicted Chord Tokens")
     ax.set_title("Cross-Attention between Melody and Chords (Last Layer)")
@@ -94,46 +94,27 @@ def explain_reward_model_with_shap(model, dataloader, device, tokenizer_info, sa
         return
         
     model.eval()
-
-    # Get a single batch to use one instance for explaining and the rest as background
     batch = next(iter(dataloader))
     melody_tokens = batch['melody_tokens'].to(device)
     chord_tokens = batch['chord_tokens'].to(device)
     
-    # The instance to explain
     test_melody = melody_tokens[0:1]
     test_chord = chord_tokens[0:1]
-
-    # The background dataset for SHAP to integrate over
     background_melody = melody_tokens[1:]
-    background_chord = chord_tokens[1:]
 
-    # A wrapper function for SHAP. It must take a numpy array of tokens
-    # and return a numpy array of model output scores.
     def f(mel_toks):
-        # SHAP passes a (num_samples, seq_len) numpy array
         mel_toks = torch.from_numpy(mel_toks).to(device).long()
-        
-        # We need a fixed chord sequence to compare against
         fixed_chord_toks = test_chord.repeat(mel_toks.shape[0], 1)
-
         mel_embed, chord_embed = model(mel_toks, fixed_chord_toks)
-        
-        # Score is the cosine similarity
         score = torch.sum(torch.nn.functional.normalize(mel_embed) * torch.nn.functional.normalize(chord_embed), dim=1)
         return score.detach().cpu().numpy()
 
-    # Use SHAP's PartitionExplainer, which is suitable for text/token-based models
     explainer = shap.PartitionExplainer(f, background_melody.cpu().numpy())
-    
-    # Get human-readable token names for the plot
     melody_id_to_token = {v: k for k, v in tokenizer_info['melody_token_to_id'].items()}
     feature_names = [melody_id_to_token.get(i.item(), '[UNK]') for i in test_melody[0]]
     
-    # Calculate SHAP values for our test instance
     shap_values = explainer(test_melody.cpu().numpy(), feature_names=feature_names)
 
-    # Create and save the waterfall plot
     plt.figure()
     shap.plots.waterfall(shap_values[0], max_display=20, show=False)
     plt.tight_layout()
@@ -152,31 +133,153 @@ def plot_model_architecture(model, dataloader, device, save_path="model_architec
     model.eval()
     batch = next(iter(dataloader))
     
-    # The visualization requires a forward pass to trace the graph.
-    # We need to handle different model input signatures.
     if "melody_tokens" in batch and "chord_tokens" in batch:
         melody_tokens = batch['melody_tokens'].to(device)
         chord_tokens = batch['chord_tokens'].to(device)
         y = model(melody_tokens, chord_tokens)
-    else: # Add more conditions for other models if needed
+    else:
         print("Model input not recognized for architecture plotting.")
         return
 
-    # make_dot can trace the graph from the output tensor back to the inputs.
-    # The output 'y' might be a tuple, so we take the first element.
     output_tensor = y[0] if isinstance(y, tuple) else y
-    
     dot = make_dot(output_tensor, params=dict(model.named_parameters()))
-    
-    # The 'format' argument determines the output file type.
-    # 'png' requires graphviz to be installed on the system.
     dot.render(save_path.replace('.png', ''), format='png', cleanup=True)
     print(f"Model architecture diagram saved to {save_path}")
 
-# To use this function, you would create a separate script that:
-# 1. Loads your configuration and a trained OnlineTransformer model.
-# 2. Creates a dataloader.
-# 3. Calls this plot_attention_heatmap function.
+def inspect_reward_model(model, dataloader, device, tokenizer_info, num_samples=5):
+    """
+    Loads samples, compares rewards for good/bad chords, and prints results.
+    """
+    model.eval()
+    print(f"\n--- Inspecting {num_samples} random samples with the reward model ---")
 
-# Placeholder for future content
-print("Visualization script created.") 
+    token_to_note = {int(k): v for k, v in tokenizer_info['token_to_note'].items()}
+    token_to_chord = {int(k): v for k, v in tokenizer_info['token_to_chord'].items()}
+
+    def format_note(token_val):
+        note_info = token_to_note.get(token_val)
+        return "SILENCE" if note_info is None or note_info[0] == -1 else f"MIDI {note_info[0]}"
+
+    def format_chord(token_val):
+        chord_info = token_to_chord.get(token_val)
+        if chord_info is None or chord_info[0] == -1: return "NO_CHORD"
+        root, intervals, inversion, _ = chord_info
+        return f"R:{root} Inv:{inversion} {intervals}"
+
+    for i, batch in enumerate(dataloader):
+        if i >= num_samples: break
+        melody_tokens = batch['melody_tokens'].to(device)
+        good_chord_tokens = batch['chord_tokens'].to(device)
+
+        bad_chord_list = good_chord_tokens.squeeze(0).tolist()
+        random.shuffle(bad_chord_list)
+        bad_chord_tokens = torch.tensor([bad_chord_list], dtype=torch.long, device=device)
+
+        with torch.no_grad():
+            good_score = model.get_reward(melody_tokens, good_chord_tokens).item()
+            bad_score = model.get_reward(melody_tokens, bad_chord_tokens).item()
+
+        decoded_melody = [format_note(t.item()) for t in melody_tokens.squeeze(0)]
+        decoded_good_chord = [format_chord(t.item()) for t in good_chord_tokens.squeeze(0)]
+        decoded_bad_chord = [format_chord(t.item()) for t in bad_chord_tokens.squeeze(0)]
+
+        print(f"\n--- Sample #{i+1} (Song ID: {batch['song_id'][0]}) ---")
+        print(f"Reward (Good Chords): {good_score:.4f}")
+        print(f"Reward (Bad Chords):  {bad_score:.4f}")
+        print("-" * 65)
+        print(f"{'Melody':<15} | {'Good Chord':<25} | {'Bad Chord (Shuffled)':<25}")
+        print(f"{'-'*15:<15} | {'-'*25:<25} | {'-'*25:<25}")
+        for m, gc, bc in zip(decoded_melody, decoded_good_chord, decoded_bad_chord):
+            print(f"{m:<15} | {gc:<25} | {bc:<25}")
+
+# --- Model Loading ---
+
+def load_reward_model_from_wandb(artifact_path: str, device: torch.device):
+    """
+    Loads a contrastive reward model and its configuration from a W&B artifact.
+    """
+    print(f"Loading model from W&B artifact: {artifact_path}")
+    api = wandb.Api()
+    
+    try: model_artifact = api.artifact(artifact_path, type='model')
+    except wandb.errors.CommError as e: raise e
+    if not model_artifact: raise ValueError(f"Artifact {artifact_path} not found.")
+    print(f"Found model artifact: {model_artifact.name}")
+
+    run = model_artifact.logged_by()
+    config = argparse.Namespace(**run.config)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        artifact_dir = model_artifact.download(root=tmpdir)
+        with open(Path(artifact_dir) / "tokenizer_info.json", 'r') as f:
+            tokenizer_info = json.load(f)
+            
+        config.melody_vocab_size = tokenizer_info['melody_vocab_size']
+        config.chord_vocab_size = tokenizer_info['chord_vocab_size']
+
+        model = ContrastiveRewardModel(
+            melody_vocab_size=config.melody_vocab_size,
+            chord_vocab_size=config.chord_vocab_size,
+            embed_dim=config.embed_dim,
+            num_heads=config.num_heads,
+            num_layers=config.num_layers,
+            max_seq_length=config.max_sequence_length
+        ).to(device)
+        
+        model_path = Path(artifact_dir) / "model.pth"
+        model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+        model.eval()
+        
+    print("Reward model loaded successfully.")
+    return model, config, tokenizer_info
+
+# --- Main Execution ---
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Visualize or inspect a trained model.")
+    parser.add_argument("artifact_path", type=str, help="W&B artifact path for the model.")
+    parser.add_argument("data_dir", type=str, help="Directory with processed data.")
+    parser.add_argument("--task", type=str, default="inspect_reward",
+                        choices=["inspect_reward", "shap", "attention", "architecture"],
+                        help="The visualization or inspection task to run.")
+    parser.add_argument("--num_samples", type=int, default=5, help="Number of samples to inspect.")
+    parser.add_argument("--split", type=str, default="valid", help="Data split to use.")
+    parser.add_argument("--save_path", type=str, default="visualization.png", help="Path to save the output visualization.")
+    
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # For now, this script only supports the reward model, so we load it directly.
+    # Future work could add flags for loading different model types.
+    model, config, tokenizer_info = load_reward_model_from_wandb(args.artifact_path, device)
+    
+    # Create a dataloader for the specified task
+    if args.task == "shap":
+        # SHAP needs a larger batch for the background dataset
+        loader_batch_size = 32
+    else:
+        # Other tasks inspect one sample at a time
+        loader_batch_size = 1
+        
+    dataloader = create_dataloader(
+        data_dir=Path(args.data_dir),
+        split=args.split,
+        batch_size=loader_batch_size,
+        shuffle=True,
+        num_workers=0,
+        mode='contrastive'
+    )
+
+    # --- Task Dispatch ---
+    if args.task == "inspect_reward":
+        inspect_reward_model(model, dataloader, device, tokenizer_info, args.num_samples)
+    elif args.task == "shap":
+        explain_reward_model_with_shap(model, dataloader, device, tokenizer_info, args.save_path)
+    elif args.task == "attention":
+        plot_attention_heatmap(model, dataloader, device, tokenizer_info, args.save_path)
+    elif args.task == "architecture":
+        plot_model_architecture(model, dataloader, device, args.save_path)
+    
+    print("\nDone.")

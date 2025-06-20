@@ -220,16 +220,25 @@ def main(config):
             best_valid_loss = avg_valid_loss
             
             with tempfile.TemporaryDirectory() as tmpdir:
-                model_path = Path(tmpdir) / "contrastive_model.pth"
+                tmpdir_path = Path(tmpdir)
+                # Save model weights with a consistent name
+                model_path = tmpdir_path / "model.pth"
                 torch.save(model.state_dict(), model_path)
                 
+                # Save the tokenizer info
+                tokenizer_path = tmpdir_path / "tokenizer_info.json"
+                with open(tokenizer_path, 'w') as f:
+                    json.dump(tokenizer_info, f, indent=4)
+
                 artifact = wandb.Artifact(
                     f"contrastive_reward-{wandb.run.id}",
                     type="model",
                     description="Contrastive reward model for melody-chord scoring.",
                     metadata=config
                 )
+                # Add both files to the artifact
                 artifact.add_file(model_path)
+                artifact.add_file(tokenizer_path)
                 wandb.log_artifact(artifact)
                 
             print(f"New best model saved with validation loss: {best_valid_loss:.4f}")
