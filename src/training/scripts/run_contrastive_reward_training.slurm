@@ -10,8 +10,9 @@
 
 # --- Environment Setup ---
 # Set the project root to the directory where the sbatch command was submitted
-PROJECT_ROOT="/work/10539/drewtaylor635/vista/Martydepth"
+export PROJECT_ROOT=$SLURM_SUBMIT_DIR
 cd $PROJECT_ROOT
+echo "Changed directory to project root: $PROJECT_ROOT"
 
 # Load required TACC modules (or equivalent for your cluster)
 module purge
@@ -47,13 +48,15 @@ else
 fi
 
 # --- WandB Setup ---
-WANDB_KEY_FILE="$PROJECT_ROOT/wandb_api_key.txt"
-if [ ! -f "$WANDB_KEY_FILE" ]; then
-    echo "ERROR: W&B API key file not found at $WANDB_KEY_FILE"
+# Export W&B API Key
+API_KEY_PATH="$PROJECT_ROOT/wandb_api_key.txt"
+if [ -f "$API_KEY_PATH" ]; then
+    export WANDB_API_KEY=$(cat "$API_KEY_PATH")
+    echo "W&B API Key exported."
+else
+    echo "ERROR: W&B API key file not found at $API_KEY_PATH"
     exit 1
 fi
-export WANDB_API_KEY=$(cat "$WANDB_KEY_FILE")
-echo "W&B API key configured."
 
 # --- Run Training ---
 echo "Starting contrastive reward model training..."

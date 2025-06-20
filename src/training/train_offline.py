@@ -79,14 +79,29 @@ def main(config: dict):
     
     scheduler = get_warmup_schedule(optimizer, num_warmup_steps=config['warmup_steps'])
 
+    wandb.watch(model, log='all')
+
+    # --- Smoke Test ---
+    if config['smoke_test']:
+        print("\n--- Smoke test successful: Model and data loaded correctly. ---")
+        try:
+            batch = next(iter(train_loader))
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            model(
+                melody_tokens=batch['melody_tokens'],
+                chord_tokens=batch['chord_input']
+            )
+            print("--- Smoke test successful: Single forward pass completed. ---")
+        except Exception as e:
+            print(f"--- Smoke test failed during forward pass: {e} ---")
+        return
+
     # --- Training Loop ---
     best_val_loss = float('inf')
-    steps_without_improvement = 0
     global_step = 0
 
     print(f"\n--- Offline Training Info ---")
     print(f"  Max epochs: {config['max_epochs']}")
-    print(f"  Early stopping patience: {config['early_stopping_patience']}")
 
     for epoch in range(config['max_epochs']):
         print(f"\n--- Epoch {epoch+1}/{config['max_epochs']} ---")
@@ -150,10 +165,9 @@ def main(config: dict):
             'train/epoch': epoch + 1
         }, step=global_step)
 
-        # Checkpointing and Early Stopping
+        # Checkpointing
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            steps_without_improvement = 0
             print(f"  New best validation loss! Saving model artifact...")
             log_model_artifact(
                 model,
@@ -161,13 +175,6 @@ def main(config: dict):
                 tokenizer_info=tokenizer_info,
                 metadata={"val_loss": avg_val_loss, "epoch": epoch+1, **config}
             )
-        else:
-            steps_without_improvement += 1
-            print(f"  Validation loss did not improve. Patience: {steps_without_improvement}/{config['early_stopping_patience']}")
-
-        if steps_without_improvement >= config['early_stopping_patience']:
-            print(f"\nStopping early after {steps_without_improvement} epochs with no improvement.")
-            break
             
     print("\nTraining complete.")
     wandb.run.summary.update({
@@ -179,10 +186,18 @@ def main(config: dict):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train the Offline Teacher model.")
     parser.add_argument("--config", required=True, help="Path to the YAML configuration file.")
+    parser.add_argument("--smoke_test", action="store_true", help="Run a quick check to see if model and data load.")
+    parser.add_argument("--data_dir", type=str, default=None, help="Override data directory specified in the config.")
     
     args = parser.parse_args()
     
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+        
+    config['smoke_test'] = args.smoke_test
+
+    # Override data_dir if provided
+    if args.data_dir:
+        config['data_dir'] = args.data_dir
         
     main(config=config) 

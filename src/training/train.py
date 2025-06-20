@@ -81,12 +81,25 @@ def main(config: dict):
         num_warmup_steps=config['warmup_steps']
     )
 
+    # --- Smoke Test ---
+    if config.get('smoke_test', False):
+        print("\n--- Smoke test successful: Model and data loaded correctly. ---")
+        try:
+            batch = next(iter(train_loader))
+            input_tokens = batch['input_tokens'].to(device)
+            model(input_tokens)
+            print("--- Smoke test successful: Single forward pass completed. ---")
+        except Exception as e:
+            print(f"--- Smoke test failed during forward pass: {e} ---")
+        return
+
     # --- Training Loop ---
     best_val_loss = float('inf')
-    steps_without_improvement = 0
+    global_step = 0
 
     print(f"\n--- Starting Training ---")
     for epoch in range(config['max_epochs']):
+        # --- Training Step ---
         model.train()
         total_train_loss = 0
         
@@ -94,20 +107,20 @@ def main(config: dict):
         for batch in pbar:
             input_tokens = batch['input_tokens'].to(device)
             target_tokens = batch['target_tokens'].to(device)
-
+            
             optimizer.zero_grad()
             logits = model(input_tokens)
             loss = loss_fn(logits.view(-1, config['vocab_size']), target_tokens.view(-1))
-            
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_val'])
             optimizer.step()
             scheduler.step()
-            
+
             lr = optimizer.param_groups[0]['lr']
             total_train_loss += loss.item()
+            global_step += 1
             pbar.set_postfix({'loss': loss.item(), 'lr': lr})
-            wandb.log({'train/step_loss': loss.item(), 'train/learning_rate': lr})
+            wandb.log({'train/step_loss': loss.item(), 'train/learning_rate': lr}, step=global_step)
 
         avg_train_loss = total_train_loss / len(train_loader)
         
@@ -132,12 +145,11 @@ def main(config: dict):
             'train/epoch_loss': avg_train_loss,
             'valid/epoch_loss': avg_valid_loss,
             'epoch': epoch + 1
-        })
+        }, step=global_step)
         
-        # --- Checkpoint & Early Stopping ---
+        # --- Checkpoint ---
         if avg_valid_loss < best_val_loss:
             best_val_loss = avg_valid_loss
-            steps_without_improvement = 0
             
             checkpoint_dir = Path(config['checkpoint_dir']) / run_name
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -151,13 +163,6 @@ def main(config: dict):
                 {"val_loss": best_val_loss, "epoch": epoch+1, **config}
             )
             print(f"New best model saved to {checkpoint_dir} with validation loss: {best_val_loss:.4f}")
-        else:
-            steps_without_improvement += 1
-            print(f"Patience: {steps_without_improvement}/{config['early_stopping_patience']}")
-
-        if steps_without_improvement >= config['early_stopping_patience']:
-            print(f"Stopping early after {steps_without_improvement} epochs with no improvement.")
-            break
             
     wandb.finish()
     print("\n--- Training Complete ---")
@@ -165,12 +170,20 @@ def main(config: dict):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train the OnlineTransformer model.")
     parser.add_argument("--config", type=str, required=True, help="Path to the YAML configuration file.")
+    parser.add_argument("--smoke_test", action="store_true", help="Run a quick check to see if model and data load.")
+    parser.add_argument("--data_dir", type=str, default=None, help="Override data directory specified in the config.")
     
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
     
+    config['smoke_test'] = args.smoke_test
+
+    # Override data_dir if provided
+    if args.data_dir:
+        config['data_dir'] = args.data_dir
+
     if 'feedforward_dim' not in config:
         config['feedforward_dim'] = 4 * config['embed_dim']
         

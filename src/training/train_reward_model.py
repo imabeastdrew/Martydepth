@@ -109,6 +109,20 @@ def main(config):
     wandb.watch(model, log='all')
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
 
+    # --- Smoke Test ---
+    if config['smoke_test']:
+        print("\n--- Smoke test successful: Model and data loaded correctly. ---")
+        # Optional: try one forward pass
+        try:
+            batch = next(iter(train_loader))
+            melody_tokens = batch['melody_tokens'].to(device)
+            chord_tokens = batch['chord_tokens'].to(device)
+            model(melody_tokens, chord_tokens)
+            print("--- Smoke test successful: Single forward pass completed. ---")
+        except Exception as e:
+            print(f"--- Smoke test failed during forward pass: {e} ---")
+        return
+
     # Loss and optimizer
     loss_fn = InfoNCELoss(temperature=config['temperature'])
     optimizer = Adam(model.parameters(), lr=config['learning_rate'])
@@ -198,12 +212,21 @@ def main(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a Contrastive Reward Model.")
     parser.add_argument("--config", type=str, required=True, help="Path to the YAML configuration file.")
+    parser.add_argument("--smoke_test", action="store_true", help="Run a quick check to see if model and data load.")
+    parser.add_argument("--data_dir", type=str, default=None, help="Override data directory specified in the config.")
     
     args = parser.parse_args()
 
     # Load config from YAML file
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+
+    # Add smoke_test flag to config
+    config['smoke_test'] = args.smoke_test
+
+    # Override data_dir if provided
+    if args.data_dir:
+        config['data_dir'] = args.data_dir
 
     # If a run name isn't specified, create a default one
     if 'wandb_run_name' not in config or config['wandb_run_name'] is None:

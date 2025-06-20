@@ -66,7 +66,7 @@ def main(config):
         split="train",
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
-        sequence_length=config['max_seq_length'] * 2, # seq_len for model is interleaved
+        sequence_length=config['max_seq_length'] * 2, # seq_len for dataloader is interleaved
         mode='online',
         shuffle=True
     )
@@ -75,7 +75,7 @@ def main(config):
         split="valid",
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
-        sequence_length=config['max_seq_length'] * 2,
+        sequence_length=config['max_seq_length'] * 2, # seq_len for dataloader is interleaved
         mode='online',
         shuffle=False
     )
@@ -89,11 +89,24 @@ def main(config):
         num_heads=config['num_heads'],
         num_layers=config['num_layers'],
         dropout=config['dropout'],
-        max_seq_length=config['max_seq_length']
+        max_seq_length=config['max_seq_length'] * 2 # Pass the full length to the model
     ).to(device)
     
     wandb.watch(model, log='all')
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
+
+    # --- Smoke Test ---
+    if config['smoke_test']:
+        print("\n--- Smoke test successful: Model and data loaded correctly. ---")
+        try:
+            batch = next(iter(train_loader))
+            real_tokens = batch['input_tokens'].to(device)
+            real_padding_mask = batch['padding_mask'].to(device)
+            model(real_tokens, padding_mask=real_padding_mask)
+            print("--- Smoke test successful: Single forward pass completed. ---")
+        except Exception as e:
+            print(f"--- Smoke test failed during forward pass: {e} ---")
+        return
 
     # Loss and optimizer
     loss_fn = nn.BCEWithLogitsLoss()
@@ -209,12 +222,21 @@ def main(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a Discriminative Reward Model.")
     parser.add_argument("--config", type=str, required=True, help="Path to the YAML configuration file.")
+    parser.add_argument("--smoke_test", action="store_true", help="Run a quick check to see if model and data load.")
+    parser.add_argument("--data_dir", type=str, default=None, help="Override data directory specified in the config.")
 
     args = parser.parse_args()
 
     # Load config from YAML file
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+
+    # Add smoke_test flag to config
+    config['smoke_test'] = args.smoke_test
+
+    # Override data_dir if provided
+    if args.data_dir:
+        config['data_dir'] = args.data_dir
 
     # If a run name isn't specified, create a default one
     if 'wandb_run_name' not in config or config['wandb_run_name'] is None:
