@@ -18,5 +18,5 @@ temperature: 0.07
 num_workers: 4
 
 # W&B args
-wandb_project: "martydepth-reward-model"
-wandb_run_name: "contrastive-reward-from-config" 
+wandb_project: "martydepth"
+checkpoint_dir: /work/10539/drewtaylor635/vista/Martydepth/checkpoints 

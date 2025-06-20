@@ -17,5 +17,5 @@ learning_rate: 1.0e-4
 num_workers: 4
 
 # W&B args
-wandb_project: "martydepth-discriminator"
-wandb_run_name: "discriminator-from-config" 
+wandb_project: "martydepth"
+checkpoint_dir: /work/10539/drewtaylor635/vista/Martydepth/checkpoints 
