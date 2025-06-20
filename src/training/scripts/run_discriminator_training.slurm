@@ -9,8 +9,8 @@
 #SBATCH -A TRA24006
 
 # --- Environment Setup ---
-# This assumes the job is submitted from the project root.
-PROJECT_ROOT=$(pwd)
+# Set the project root to the directory where the sbatch command was submitted
+PROJECT_ROOT="$SLURM_SUBMIT_DIR"
 cd $PROJECT_ROOT || exit
 
 # Load required TACC modules (or equivalent for your cluster)
