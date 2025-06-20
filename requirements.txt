@@ -9,3 +9,7 @@ pathlib>=1.0.1
 transformers
 jsonargparse[signatures]
 scipy
+shap
+torchviz
+matplotlib
+PyYAML

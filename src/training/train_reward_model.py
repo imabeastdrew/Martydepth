@@ -142,6 +142,7 @@ def main(config):
         # Validation loop
         model.eval()
         total_valid_loss = 0
+        all_ranks = []
         with torch.no_grad():
             pbar_valid = tqdm(valid_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Validation]")
             for batch in pbar_valid:
@@ -154,12 +155,23 @@ def main(config):
                 total_valid_loss += loss.item()
                 pbar_valid.set_postfix({'loss': loss.item()})
 
+                # Calculate Top-1 Accuracy
+                logits = torch.matmul(F.normalize(mel_embeds, p=2, dim=1), F.normalize(chord_embeds, p=2, dim=1).T)
+                # Get the rank of the positive example for each row
+                sorted_indices = torch.argsort(logits, descending=True, dim=1)
+                # Ground truth is a diagonal matrix, so we want the rank of element `i` in row `i`
+                labels = torch.arange(len(logits), device=logits.device)
+                ranks = (sorted_indices == labels[:, None]).nonzero(as_tuple=True)[1] + 1
+                all_ranks.extend(ranks.cpu().numpy())
+
         avg_valid_loss = total_valid_loss / len(valid_loader)
+        top1_accuracy = np.mean(np.array(all_ranks) == 1) * 100
         
-        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_valid_loss:.4f}")
+        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_valid_loss:.4f}, Top-1 Acc: {top1_accuracy:.2f}%")
         wandb.log({
             'train/epoch_loss': avg_train_loss,
             'valid/epoch_loss': avg_valid_loss,
+            'valid/top1_accuracy': top1_accuracy,
             'epoch': epoch + 1
         })
         
