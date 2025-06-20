@@ -118,14 +118,15 @@ def main(config):
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
 
     # --- Smoke Test ---
-    if config['smoke_test']:
-        print("\n--- Smoke test successful: Model and data loaded correctly. ---")
-        # Optional: try one forward pass
+    if config.get('smoke_test', False):
+        print("\n--- Smoke test: Model and data loaded correctly. ---")
         try:
             batch = next(iter(train_loader))
-            melody_tokens = batch['melody_tokens'].to(device)
-            chord_tokens = batch['chord_tokens'].to(device)
-            model(melody_tokens, chord_tokens)
+            melody = batch['melody_tokens'].to(device)
+            good_chord = batch['chord_tokens'].to(device)
+            
+            model(melody, good_chord) # Test one forward pass
+            
             print("--- Smoke test successful: Single forward pass completed. ---")
         except Exception as e:
             print(f"--- Smoke test failed during forward pass: {e} ---")
@@ -149,8 +150,8 @@ def main(config):
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Training]")
         for batch in pbar:
-            melody = batch['melody'].to(device)
-            good_chord = batch['good_chord'].to(device)
+            melody = batch['melody_tokens'].to(device)
+            good_chord = batch['chord_tokens'].to(device)
             
             # --- New Negative Sampling Strategy ---
             # Create a batch of random chord tokens as the "bad" chords
@@ -185,8 +186,8 @@ def main(config):
         with torch.no_grad():
             pbar_valid = tqdm(valid_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Validation]")
             for batch in pbar_valid:
-                melody = batch['melody'].to(device)
-                good_chord = batch['good_chord'].to(device)
+                melody = batch['melody_tokens'].to(device)
+                good_chord = batch['chord_tokens'].to(device)
 
                 # Use the same random sampling for validation
                 bad_chord = torch.randint(
