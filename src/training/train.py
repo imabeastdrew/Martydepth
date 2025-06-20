@@ -156,13 +156,11 @@ def main(config: dict):
             
             # Use the existing logger for artifacts
             log_model_artifact(
-                model,
-                run_name,
-                checkpoint_dir,
-                tokenizer_info,
-                {"val_loss": best_val_loss, "epoch": epoch+1, **config}
+                model=model,
+                name=f"{run_name}-epoch-{epoch+1}",
+                tokenizer_info=tokenizer_info,
+                metadata={"val_loss": best_val_loss, "epoch": epoch+1, **config}
             )
-            print(f"New best model saved to {checkpoint_dir} with validation loss: {best_val_loss:.4f}")
             
     wandb.finish()
     print("\n--- Training Complete ---")
