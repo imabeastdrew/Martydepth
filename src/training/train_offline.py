@@ -20,19 +20,21 @@ from src.training.utils.schedulers import get_warmup_schedule
 
 def main(config: dict):
     """Main training function."""
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    # --- Setup ---
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- W&B Initialization ---
+    # --- W&B Setup ---
+    run_name = (
+        f"offline_L{config['num_layers']}_H{config['num_heads']}"
+        f"_D{config['embed_dim']}_seq{config['max_sequence_length']}"
+        f"_bs{config['batch_size']}_lr{config['learning_rate']}"
+    )
+
     wandb.init(
         project=config['wandb_project'],
+        name=run_name,
         config=config,
-        name=f"offline_teacher_{wandb.util.generate_id()}",
         job_type="offline_training"
     )
 
@@ -162,7 +164,7 @@ def main(config: dict):
         wandb.log({
             'train/epoch_loss': avg_train_loss,
             'valid/epoch_loss': avg_val_loss,
-            'train/epoch': epoch + 1
+            'epoch': epoch + 1
         }, step=global_step)
 
         # Checkpointing

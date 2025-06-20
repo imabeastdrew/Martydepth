@@ -24,13 +24,19 @@ def main(config: dict):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    # --- W&B Setup ---
+    run_name = (
+        f"online_L{config['num_layers']}_H{config['num_heads']}"
+        f"_D{config['embed_dim']}_seq{config['max_sequence_length']}"
+        f"_bs{config['batch_size']}_lr{config['learning_rate']}"
+    )
+
     wandb.init(
         project=config['wandb_project'],
-        name=config.get('wandb_run_name'),
+        name=run_name,
         config=config,
         job_type="online_training"
     )
-    run_name = wandb.run.name
     
     # --- Data ---
     data_path = Path(config['data_dir'])

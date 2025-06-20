@@ -64,14 +64,22 @@ def main(config):
         device = torch.device("cpu")
     print(f"Using device: {device}")
 
-    # W&B setup
+    if 'wandb_project' not in config:
+        raise ValueError("wandb_project not found in config")
+
+    # --- W&B Setup ---
+    run_name = (
+        f"contrastive_L{config['num_layers']}_H{config['num_heads']}"
+        f"_D{config['embed_dim']}_seq{config['max_seq_length']}"
+        f"_bs{config['batch_size']}_lr{config['learning_rate']}"
+    )
+
     wandb.init(
         project=config['wandb_project'],
-        name=config['wandb_run_name'],
-        config=config
+        name=run_name,
+        config=config,
+        job_type="contrastive_training"
     )
-    # Get the automatically generated run name for artifact naming
-    run_name = wandb.run.name
 
     # Dataloaders
     train_loader = create_dataloader(
@@ -128,6 +136,7 @@ def main(config):
     optimizer = Adam(model.parameters(), lr=config['learning_rate'])
 
     best_valid_loss = float('inf')
+    global_step = 0
 
     # Training loop
     for epoch in range(config['epochs']):
@@ -147,9 +156,11 @@ def main(config):
             loss.backward()
             optimizer.step()
             
+            lr = optimizer.param_groups[0]['lr']
             total_train_loss += loss.item()
-            pbar.set_postfix({'loss': loss.item()})
-            wandb.log({'train/step_loss': loss.item()})
+            global_step += 1
+            pbar.set_postfix({'loss': loss.item(), 'lr': lr})
+            wandb.log({'train/step_loss': loss.item(), 'train/learning_rate': lr}, step=global_step)
 
         avg_train_loss = total_train_loss / len(train_loader)
         
@@ -208,6 +219,8 @@ def main(config):
                 
             print(f"New best model saved with validation loss: {best_valid_loss:.4f}")
 
+    wandb.finish()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a Contrastive Reward Model.")
@@ -228,8 +241,4 @@ if __name__ == "__main__":
     if args.data_dir:
         config['data_dir'] = args.data_dir
 
-    # If a run name isn't specified, create a default one
-    if 'wandb_run_name' not in config or config['wandb_run_name'] is None:
-        config['wandb_run_name'] = f"reward_model_bs{config['batch_size']}_lr{config['learning_rate']}"
-        
     main(config) 

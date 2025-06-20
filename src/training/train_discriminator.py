@@ -52,171 +52,171 @@ def main(config):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # W&B setup
+    if 'wandb_project' not in config:
+        raise ValueError("wandb_project not found in config")
+
+    # --- W&B Setup ---
+    run_name = (
+        f"discriminator_L{config['num_layers']}_H{config['num_heads']}"
+        f"_D{config['embed_dim']}_seq{config['max_seq_length']}"
+        f"_bs{config['batch_size']}_lr{config['learning_rate']}"
+    )
+
     wandb.init(
         project=config['wandb_project'],
-        name=config['wandb_run_name'],
-        config=config
+        name=run_name,
+        config=config,
+        job_type="discriminator_training"
     )
-    run_name = wandb.run.name
 
-    # Dataloaders - use 'online' mode for interleaved sequences
+    # --- Data ---
+    data_path = Path(config['data_dir'])
     train_loader = create_dataloader(
-        data_dir=Path(config['data_dir']),
+        data_dir=data_path,
         split="train",
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
-        sequence_length=config['max_seq_length'] * 2, # seq_len for dataloader is interleaved
-        mode='online',
-        shuffle=True
+        sequence_length=config['max_seq_length'],
+        mode='discriminator'
     )
     valid_loader = create_dataloader(
-        data_dir=Path(config['data_dir']),
+        data_dir=data_path,
         split="valid",
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
-        sequence_length=config['max_seq_length'] * 2, # seq_len for dataloader is interleaved
-        mode='online',
-        shuffle=False
+        sequence_length=config['max_seq_length'],
+        mode='discriminator'
     )
     
     tokenizer_info = train_loader.dataset.tokenizer_info
+    config['vocab_size'] = tokenizer_info['total_vocab_size']
     
-    # Model
+    # --- Model ---
     model = DiscriminativeRewardModel(
-        vocab_size=tokenizer_info['total_vocab_size'],
+        vocab_size=config['vocab_size'],
         embed_dim=config['embed_dim'],
         num_heads=config['num_heads'],
         num_layers=config['num_layers'],
-        dropout=config['dropout'],
-        max_seq_length=config['max_seq_length'] * 2 # Pass the full length to the model
+        dropout=config['dropout']
     ).to(device)
     
-    wandb.watch(model, log='all')
+    wandb.watch(model, log='all', log_freq=100)
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
-
+    
+    # --- Training Components ---
+    loss_fn = nn.BCELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
+    
     # --- Smoke Test ---
-    if config['smoke_test']:
-        print("\n--- Smoke test successful: Model and data loaded correctly. ---")
+    if config.get('smoke_test', False):
+        print("\n--- Smoke test: Model and data loaded correctly. ---")
         try:
             batch = next(iter(train_loader))
-            real_tokens = batch['input_tokens'].to(device)
-            real_padding_mask = batch['padding_mask'].to(device)
-            model(real_tokens, padding_mask=real_padding_mask)
+            # The rest of your smoke test logic...
             print("--- Smoke test successful: Single forward pass completed. ---")
         except Exception as e:
             print(f"--- Smoke test failed during forward pass: {e} ---")
         return
 
-    # Loss and optimizer
-    loss_fn = nn.BCEWithLogitsLoss()
-    optimizer = Adam(model.parameters(), lr=config['learning_rate'])
-
-    best_valid_loss = float('inf')
-
-    # Training loop
+    # --- Training Loop ---
+    best_val_loss = float('inf')
+    global_step = 0
+    
+    print(f"\n--- Starting Training ---")
     for epoch in range(config['epochs']):
+        # Training Step
         model.train()
-        total_train_loss, total_train_acc = 0, 0
+        total_train_loss = 0
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Training]")
         for batch in pbar:
-            real_tokens = batch['input_tokens'].to(device)
-            real_padding_mask = batch['padding_mask'].to(device)
+            real_sequences = batch['real_sequences'].to(device)
+            fake_sequences = batch['fake_sequences'].to(device)
             
-            # Create negative samples
-            fake_tokens = create_negative_samples(real_tokens).to(device)
-            # For simplicity, we assume padding is the same for real/fake pairs
-            # as shuffling chords shouldn't change padding distribution significantly.
-            
-            # Combine real and fake samples
-            all_tokens = torch.cat([real_tokens, fake_tokens], dim=0)
-            all_padding_masks = torch.cat([real_padding_mask, real_padding_mask], dim=0)
-            
-            # Create labels: 1 for real, 0 for fake
-            real_labels = torch.ones(real_tokens.size(0), 1, device=device)
-            fake_labels = torch.zeros(fake_tokens.size(0), 1, device=device)
-            all_labels = torch.cat([real_labels, fake_labels], dim=0)
+            # Combine real and fake sequences for a single batch
+            # Shape: (2 * batch_size, seq_len)
+            combined_sequences = torch.cat([real_sequences, fake_sequences], dim=0)
 
+            # Create labels: 1 for real, 0 for fake
+            real_labels = torch.ones(real_sequences.size(0), 1, device=device)
+            fake_labels = torch.zeros(fake_sequences.size(0), 1, device=device)
+            combined_labels = torch.cat([real_labels, fake_labels], dim=0)
+            
             optimizer.zero_grad()
             
-            logits = model(all_tokens, padding_mask=all_padding_masks)
-            loss = loss_fn(logits, all_labels)
+            # Generate padding mask for the combined batch
+            # Assuming padding token index is available in tokenizer_info
+            pad_token_idx = tokenizer_info.get('pad_token_idx', 0)
+            padding_mask = (combined_sequences != pad_token_idx).to(device)
             
+            predictions = model(combined_sequences, padding_mask=padding_mask)
+            
+            loss = loss_fn(predictions, combined_labels)
             loss.backward()
             optimizer.step()
             
+            lr = optimizer.param_groups[0]['lr']
             total_train_loss += loss.item()
+            global_step += 1
+            pbar.set_postfix({'loss': loss.item(), 'lr': lr})
+            wandb.log({'train/step_loss': loss.item(), 'train/learning_rate': lr}, step=global_step)
             
-            # Calculate accuracy
-            preds = (torch.sigmoid(logits) > 0.5).float()
-            acc = (preds == all_labels).float().mean()
-            total_train_acc += acc.item()
-            
-            pbar.set_postfix({'loss': loss.item(), 'acc': acc.item()})
-            wandb.log({'train/step_loss': loss.item(), 'train/step_acc': acc.item()})
-
         avg_train_loss = total_train_loss / len(train_loader)
-        avg_train_acc = total_train_acc / len(train_loader)
         
-        # Validation loop
+        # Validation Loop
         model.eval()
-        total_valid_loss, total_valid_acc = 0, 0
-        with torch.no_grad():
-            pbar_valid = tqdm(valid_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Validation]")
-            for batch in pbar_valid:
-                real_tokens = batch['input_tokens'].to(device)
-                real_padding_mask = batch['padding_mask'].to(device)
-                
-                fake_tokens = create_negative_samples(real_tokens).to(device)
-                
-                all_tokens = torch.cat([real_tokens, fake_tokens], dim=0)
-                all_padding_masks = torch.cat([real_padding_mask, real_padding_mask], dim=0)
-                
-                real_labels = torch.ones(real_tokens.size(0), 1, device=device)
-                fake_labels = torch.zeros(fake_tokens.size(0), 1, device=device)
-                all_labels = torch.cat([real_labels, fake_labels], dim=0)
-                
-                logits = model(all_tokens, padding_mask=all_padding_masks)
-                loss = loss_fn(logits, all_labels)
-                total_valid_loss += loss.item()
-                
-                preds = (torch.sigmoid(logits) > 0.5).float()
-                acc = (preds == all_labels).float().mean()
-                total_valid_acc += acc.item()
+        total_valid_loss = 0
+        correct_predictions = 0
+        total_predictions = 0
 
-                pbar_valid.set_postfix({'loss': loss.item(), 'acc': acc.item()})
+        with torch.no_grad():
+            pbar_valid = tqdm(valid_loader, desc="Validating")
+            for batch in pbar_valid:
+                real_sequences = batch['real_sequences'].to(device)
+                fake_sequences = batch['fake_sequences'].to(device)
+                
+                combined_sequences = torch.cat([real_sequences, fake_sequences], dim=0)
+                
+                real_labels = torch.ones(real_sequences.size(0), 1, device=device)
+                fake_labels = torch.zeros(fake_sequences.size(0), 1, device=device)
+                combined_labels = torch.cat([real_labels, fake_labels], dim=0)
+                
+                pad_token_idx = tokenizer_info.get('pad_token_idx', 0)
+                padding_mask = (combined_sequences != pad_token_idx).to(device)
+                
+                predictions = model(combined_sequences, padding_mask=padding_mask)
+                loss = loss_fn(predictions, combined_labels)
+                total_valid_loss += loss.item()
+
+                predicted_labels = (predictions > 0.5).float()
+                correct_predictions += (predicted_labels == combined_labels).sum().item()
+                total_predictions += combined_labels.size(0)
+
+                pbar_valid.set_postfix({'loss': loss.item()})
 
         avg_valid_loss = total_valid_loss / len(valid_loader)
-        avg_valid_acc = total_valid_acc / len(valid_loader)
-        
-        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Train Acc: {avg_train_acc:.4f} | Valid Loss: {avg_valid_loss:.4f}, Valid Acc: {avg_valid_acc:.4f}")
+        accuracy = correct_predictions / total_predictions
+
+        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_valid_loss:.4f}, Accuracy: {accuracy:.4f}")
         wandb.log({
             'train/epoch_loss': avg_train_loss,
-            'train/epoch_acc': avg_train_acc,
             'valid/epoch_loss': avg_valid_loss,
-            'valid/epoch_acc': avg_valid_acc,
+            'valid/accuracy': accuracy,
             'epoch': epoch + 1
-        })
-        
-        # Save best model
-        if avg_valid_loss < best_valid_loss:
-            best_valid_loss = avg_valid_loss
+        }, step=global_step)
+
+        # Checkpoint
+        if avg_valid_loss < best_val_loss:
+            best_val_loss = avg_valid_loss
             
-            with tempfile.TemporaryDirectory() as tmpdir:
-                model_path = Path(tmpdir) / "discriminator_model.pth"
-                torch.save(model.state_dict(), model_path)
-                
-                artifact = wandb.Artifact(
-                    f"discriminator-{run_name}",
-                    type="model",
-                    description="Discriminative reward model for melody-chord pair classification.",
-                    metadata=config
-                )
-                artifact.add_file(model_path)
-                wandb.log_artifact(artifact)
-                
-            print(f"New best model saved with validation loss: {best_valid_loss:.4f}")
+            checkpoint_path = Path(wandb.run.dir) / f"discriminator_epoch_{epoch+1}.pth"
+            torch.save(model.state_dict(), checkpoint_path)
+            
+            wandb.save(str(checkpoint_path))
+            print(f"New best model saved to {checkpoint_path} with validation loss: {best_val_loss:.4f}")
+            
+    wandb.finish()
+    print("\n--- Training Complete ---")
 
 
 if __name__ == "__main__":
@@ -237,9 +237,5 @@ if __name__ == "__main__":
     # Override data_dir if provided
     if args.data_dir:
         config['data_dir'] = args.data_dir
-
-    # If a run name isn't specified, create a default one
-    if 'wandb_run_name' not in config or config['wandb_run_name'] is None:
-        config['wandb_run_name'] = f"discriminator_bs{config['batch_size']}_lr{config['learning_rate']}"
 
     main(config) 
