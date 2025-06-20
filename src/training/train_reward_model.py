@@ -135,6 +135,10 @@ def main(config):
     loss_fn = InfoNCELoss(temperature=config['temperature'])
     optimizer = Adam(model.parameters(), lr=config['learning_rate'])
 
+    # --- New: Get Chord Vocabulary Size for Random Sampling ---
+    chord_vocab_size = tokenizer_info['chord_vocab_size']
+    chord_token_start_idx = tokenizer_info['chord_token_start']
+    
     best_valid_loss = float('inf')
     global_step = 0
 
@@ -145,14 +149,24 @@ def main(config):
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Training]")
         for batch in pbar:
-            melody_tokens = batch['melody_tokens'].to(device)
-            chord_tokens = batch['chord_tokens'].to(device)
-
+            melody = batch['melody'].to(device)
+            good_chord = batch['good_chord'].to(device)
+            
+            # --- New Negative Sampling Strategy ---
+            # Create a batch of random chord tokens as the "bad" chords
+            bad_chord = torch.randint(
+                low=chord_token_start_idx,
+                high=chord_vocab_size,
+                size=good_chord.shape,
+                device=device
+            )
+            
             optimizer.zero_grad()
             
-            mel_embeds, chord_embeds = model(melody_tokens, chord_tokens)
-            loss = loss_fn(mel_embeds, chord_embeds)
+            good_score = model(melody, good_chord)
+            bad_score = model(melody, bad_chord)
             
+            loss = loss_fn(good_score, bad_score)
             loss.backward()
             optimizer.step()
             
@@ -167,36 +181,41 @@ def main(config):
         # Validation loop
         model.eval()
         total_valid_loss = 0
-        all_ranks = []
+        total_valid_acc = 0
         with torch.no_grad():
             pbar_valid = tqdm(valid_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Validation]")
             for batch in pbar_valid:
-                melody_tokens = batch['melody_tokens'].to(device)
-                chord_tokens = batch['chord_tokens'].to(device)
-                
-                mel_embeds, chord_embeds = model(melody_tokens, chord_tokens)
-                loss = loss_fn(mel_embeds, chord_embeds)
-                
-                total_valid_loss += loss.item()
-                pbar_valid.set_postfix({'loss': loss.item()})
+                melody = batch['melody'].to(device)
+                good_chord = batch['good_chord'].to(device)
 
-                # Calculate Top-1 Accuracy
-                logits = torch.matmul(F.normalize(mel_embeds, p=2, dim=1), F.normalize(chord_embeds, p=2, dim=1).T)
-                # Get the rank of the positive example for each row
-                sorted_indices = torch.argsort(logits, descending=True, dim=1)
-                # Ground truth is a diagonal matrix, so we want the rank of element `i` in row `i`
-                labels = torch.arange(len(logits), device=logits.device)
-                ranks = (sorted_indices == labels[:, None]).nonzero(as_tuple=True)[1] + 1
-                all_ranks.extend(ranks.cpu().numpy())
+                # Use the same random sampling for validation
+                bad_chord = torch.randint(
+                    low=chord_token_start_idx,
+                    high=chord_vocab_size,
+                    size=good_chord.shape,
+                    device=device
+                )
+                
+                good_score = model(melody, good_chord)
+                bad_score = model(melody, bad_chord)
+                
+                loss = loss_fn(good_score, bad_score)
+                total_valid_loss += loss.item()
+                
+                # Accuracy: count how often good_score > bad_score
+                acc = (good_score > bad_score).float().mean()
+                total_valid_acc += acc.item()
+                
+                pbar_valid.set_postfix({'loss': loss.item(), 'acc': acc.item()})
 
         avg_valid_loss = total_valid_loss / len(valid_loader)
-        top1_accuracy = np.mean(np.array(all_ranks) == 1) * 100
+        avg_valid_acc = total_valid_acc / len(valid_loader)
         
-        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_valid_loss:.4f}, Top-1 Acc: {top1_accuracy:.2f}%")
+        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_valid_loss:.4f}, Valid Acc: {avg_valid_acc:.2f}%")
         wandb.log({
             'train/epoch_loss': avg_train_loss,
             'valid/epoch_loss': avg_valid_loss,
-            'valid/top1_accuracy': top1_accuracy,
+            'valid/accuracy': avg_valid_acc,
             'epoch': epoch + 1
         })
         

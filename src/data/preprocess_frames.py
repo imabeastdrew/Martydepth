@@ -249,40 +249,31 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
         sequence_filename = f"sequence_{i:06d}.pkl"
         with open(output_dir / sequence_filename, 'wb') as f:
             pickle.dump(seq, f)
-            
-    # --- Correctly Calculate and Save Tokenizer Info ---
-    # Melody vocab size is fixed and known
-    final_melody_vocab_size = melody_tokenizer.next_token_id
 
-    # Chord vocab size is dynamic, find the max token ID used
-    max_chord_token = 0
-    if chord_tokenizer.token_to_chord:
-        max_chord_token = max(chord_tokenizer.token_to_chord.keys())
-    # Vocab size needs to be max_token + 1
-    final_chord_vocab_size = max_chord_token + 1
-    
-    # Total vocab size is the max of the two individual sizes
-    final_total_vocab_size = max(final_melody_vocab_size, final_chord_vocab_size)
-
+    # Save tokenizer info as json
     tokenizer_info = {
-        "melody_vocab_size": final_melody_vocab_size,
-        "chord_vocab_size": final_chord_vocab_size,
-        "total_vocab_size": final_total_vocab_size,
-        "chord_token_start": CHORD_TOKEN_START
+        "melody_vocab_size": melody_tokenizer.next_token_id,
+        "chord_vocab_size": chord_tokenizer.next_token_id,
+        "total_vocab_size": chord_tokenizer.next_token_id,
+        "chord_token_start": CHORD_TOKEN_START,
+        "token_to_chord": chord_tokenizer.token_to_chord,
+        "token_to_note": melody_tokenizer.token_to_note,
     }
-    
-    print("\n--- Final Vocabulary Info ---")
-    print(f"  Melody vocab size: {final_melody_vocab_size}")
-    print(f"  Chord vocab size: {final_chord_vocab_size}")
-    print(f"  Total vocab size: {final_total_vocab_size}")
-    print("-----------------------------\n")
 
     with open(output_dir / 'tokenizer_info.json', 'w') as f:
-        json.dump(tokenizer_info, f, indent=4)
+        # Custom JSON encoder to handle tuple keys
+        class NpEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                if isinstance(obj, np.floating):
+                    return float(obj)
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                return super(NpEncoder, self).default(obj)
         
-    # Save the tokenizer itself for future use (e.g., inference)
-    with open(output_dir / 'chord_tokenizer.pkl', 'wb') as f:
-        pickle.dump(chord_tokenizer, f)
+        json.dump(tokenizer_info, f, cls=NpEncoder, indent=4)
+    print("Tokenizer info saved.")
 
 def main():
     # Get the project root directory and file paths
