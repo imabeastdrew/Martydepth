@@ -10,8 +10,8 @@
 
 # --- Environment Setup ---
 # Set the project root to the directory where the sbatch command was submitted
-PROJECT_ROOT="$SLURM_SUBMIT_DIR"
-cd $PROJECT_ROOT || exit
+PROJECT_ROOT="/work/10539/drewtaylor635/vista/Martydepth"
+cd $PROJECT_ROOT
 
 # Load required TACC modules (or equivalent for your cluster)
 module purge
