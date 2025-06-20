@@ -39,7 +39,7 @@ def main(config: dict):
     )
 
     # --- Dataloaders ---
-    train_loader = create_dataloader(
+    train_loader, tokenizer_info = create_dataloader(
         data_dir=Path(config['data_dir']),
         split="train",
         batch_size=config['batch_size'],
@@ -48,7 +48,7 @@ def main(config: dict):
         mode='offline'
     )
     
-    val_loader = create_dataloader(
+    val_loader, _ = create_dataloader(
         data_dir=Path(config['data_dir']),
         split="valid",
         batch_size=config['batch_size'],
@@ -57,7 +57,6 @@ def main(config: dict):
         mode='offline'
     )
     
-    tokenizer_info = train_loader.dataset.tokenizer_info
     config['melody_vocab_size'] = tokenizer_info['melody_vocab_size']
     config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
     

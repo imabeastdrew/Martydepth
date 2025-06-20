@@ -88,3 +88,6 @@ wandb_api_key.txt
 # Slurm
 slurm_logs/
 .slurm/
+
+# Paper
+ReaLChords.md

@@ -71,7 +71,7 @@ def main(config):
 
     # --- Data ---
     data_path = Path(config['data_dir'])
-    train_loader = create_dataloader(
+    train_loader, tokenizer_info = create_dataloader(
         data_dir=data_path,
         split="train",
         batch_size=config['batch_size'],
@@ -79,7 +79,7 @@ def main(config):
         sequence_length=config['max_seq_length'],
         mode='discriminator'
     )
-    valid_loader = create_dataloader(
+    valid_loader, _ = create_dataloader(
         data_dir=data_path,
         split="valid",
         batch_size=config['batch_size'],
@@ -88,7 +88,6 @@ def main(config):
         mode='discriminator'
     )
     
-    tokenizer_info = train_loader.dataset.tokenizer_info
     config['vocab_size'] = tokenizer_info['total_vocab_size']
     
     # --- Model ---

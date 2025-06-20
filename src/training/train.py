@@ -40,7 +40,7 @@ def main(config: dict):
     
     # --- Data ---
     data_path = Path(config['data_dir'])
-    train_loader = create_dataloader(
+    train_loader, tokenizer_info = create_dataloader(
         data_dir=data_path,
         split="train",
         batch_size=config['batch_size'],
@@ -48,7 +48,7 @@ def main(config: dict):
         sequence_length=config['max_sequence_length'],
         mode='online'
     )
-    valid_loader = create_dataloader(
+    valid_loader, _ = create_dataloader(
         data_dir=data_path,
         split="valid",
         batch_size=config['batch_size'],
@@ -57,7 +57,6 @@ def main(config: dict):
         mode='online'
     )
     
-    tokenizer_info = train_loader.dataset.tokenizer_info
     config['vocab_size'] = tokenizer_info['total_vocab_size']
     
     # --- Model ---

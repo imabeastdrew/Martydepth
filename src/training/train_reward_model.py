@@ -82,7 +82,7 @@ def main(config):
     )
 
     # Dataloaders
-    train_loader = create_dataloader(
+    train_loader, tokenizer_info = create_dataloader(
         data_dir=Path(config['data_dir']),
         split="train",
         batch_size=config['batch_size'],
@@ -91,7 +91,7 @@ def main(config):
         mode='contrastive',
         shuffle=True
     )
-    valid_loader = create_dataloader(
+    valid_loader, _ = create_dataloader(
         data_dir=Path(config['data_dir']),
         split="valid",
         batch_size=config['batch_size'],
@@ -100,8 +100,6 @@ def main(config):
         mode='contrastive',
         shuffle=False
     )
-    
-    tokenizer_info = train_loader.dataset.tokenizer_info
     
     # Model
     model = ContrastiveRewardModel(

@@ -100,7 +100,8 @@ def explain_reward_model_with_shap(model, dataloader, device, tokenizer_info, sa
     
     test_melody = melody_tokens[0:1]
     test_chord = chord_tokens[0:1]
-    background_melody = melody_tokens[1:]
+    # Use a smaller, fixed-size background dataset to prevent memory issues.
+    background_melody = melody_tokens[1:6]
 
     def f(mel_toks):
         mel_toks = torch.from_numpy(mel_toks).to(device).long()
@@ -110,12 +111,26 @@ def explain_reward_model_with_shap(model, dataloader, device, tokenizer_info, sa
         return score.detach().cpu().numpy()
 
     explainer = shap.PartitionExplainer(f, background_melody.cpu().numpy())
-    melody_id_to_token = {v: k for k, v in tokenizer_info['melody_token_to_id'].items()}
-    feature_names = [melody_id_to_token.get(i.item(), '[UNK]') for i in test_melody[0]]
     
-    shap_values = explainer(test_melody.cpu().numpy(), feature_names=feature_names)
+    # Correctly decode feature names from the tokenizer info
+    token_to_note = {int(k): v for k, v in tokenizer_info['token_to_note'].items()}
+    feature_names = []
+    for token_item in test_melody[0]:
+        token_val = token_item.item()
+        note_info = token_to_note.get(token_val)
+        if note_info is None or note_info[0] == -1:
+            feature_names.append("SILENCE")
+        else:
+            # Format as "MIDI pitch (onset/hold)"
+            note_type = "onset" if note_info[2] else "hold"
+            feature_names.append(f"MIDI {note_info[0]} ({note_type})")
+
+    shap_values = explainer(test_melody.cpu().numpy())
+    # Assign the feature names directly to the Explanation object
+    shap_values.feature_names = feature_names
 
     plt.figure()
+    # The plotting function will now find the feature names on the shap_values object
     shap.plots.waterfall(shap_values[0], max_display=20, show=False)
     plt.tight_layout()
     plt.savefig(save_path)
@@ -171,8 +186,18 @@ def inspect_reward_model(model, dataloader, device, tokenizer_info, num_samples=
         melody_tokens = batch['melody_tokens'].to(device)
         good_chord_tokens = batch['chord_tokens'].to(device)
 
-        bad_chord_list = good_chord_tokens.squeeze(0).tolist()
-        random.shuffle(bad_chord_list)
+        # Create a more robust "bad" chord sequence by random sampling
+        chord_vocab_size = tokenizer_info['chord_vocab_size']
+        good_chords_list = good_chord_tokens.squeeze(0).tolist()
+        bad_chord_list = []
+        for true_chord_token in good_chords_list:
+            while True:
+                # Sample a random token from the chord vocabulary
+                random_token = random.randint(0, chord_vocab_size - 1)
+                # Ensure it's not the same as the ground truth token
+                if random_token != true_chord_token:
+                    bad_chord_list.append(random_token)
+                    break
         bad_chord_tokens = torch.tensor([bad_chord_list], dtype=torch.long, device=device)
 
         with torch.no_grad():
@@ -213,7 +238,7 @@ def load_reward_model_from_wandb(artifact_path: str, device: torch.device):
         artifact_dir = model_artifact.download(root=tmpdir)
         with open(Path(artifact_dir) / "tokenizer_info.json", 'r') as f:
             tokenizer_info = json.load(f)
-            
+
         config.melody_vocab_size = tokenizer_info['melody_vocab_size']
         config.chord_vocab_size = tokenizer_info['chord_vocab_size']
 
@@ -223,7 +248,7 @@ def load_reward_model_from_wandb(artifact_path: str, device: torch.device):
             embed_dim=config.embed_dim,
             num_heads=config.num_heads,
             num_layers=config.num_layers,
-            max_seq_length=config.max_sequence_length
+            max_seq_length=config.max_seq_length
         ).to(device)
         
         model_path = Path(artifact_dir) / "model.pth"
@@ -248,13 +273,14 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
+    # --- Setup ---
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # For now, this script only supports the reward model, so we load it directly.
     # Future work could add flags for loading different model types.
     model, config, tokenizer_info = load_reward_model_from_wandb(args.artifact_path, device)
-    
+
     # Create a dataloader for the specified task
     if args.task == "shap":
         # SHAP needs a larger batch for the background dataset
@@ -263,12 +289,13 @@ if __name__ == "__main__":
         # Other tasks inspect one sample at a time
         loader_batch_size = 1
         
-    dataloader = create_dataloader(
+    dataloader, _ = create_dataloader(
         data_dir=Path(args.data_dir),
         split=args.split,
         batch_size=loader_batch_size,
         shuffle=True,
         num_workers=0,
+        sequence_length=config.max_seq_length,
         mode='contrastive'
     )
 

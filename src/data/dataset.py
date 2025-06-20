@@ -160,7 +160,7 @@ def create_dataloader(data_dir: Path,
                      shuffle: bool = True,
                      num_workers: int = 4,
                      sequence_length: int = 256,
-                     mode: str = 'online') -> torch.utils.data.DataLoader:
+                     mode: str = 'online') -> Tuple[torch.utils.data.DataLoader, Dict]:
     """
     Create a DataLoader for the frame sequences
     
@@ -174,7 +174,7 @@ def create_dataloader(data_dir: Path,
         mode: 'online' for causal training, 'offline' for full context, or 'contrastive' for reward model training.
         
     Returns:
-        DataLoader for the specified split
+        A tuple containing the DataLoader and the tokenizer_info dictionary.
     """
     print(f"\n Creating {split} dataloader:")
     print(f"  Data directory: {data_dir}")
@@ -190,13 +190,14 @@ def create_dataloader(data_dir: Path,
         mode=mode
     )
     
-    return torch.utils.data.DataLoader(
+    dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available()
     )
+    return dataloader, dataset.tokenizer_info
 
 def main():
     """Test the dataset and dataloader"""
@@ -210,7 +211,7 @@ def main():
     # Test all modes
     for mode in ['online', 'offline', 'contrastive']:
         print(f"\nTesting {mode} mode...")
-        dataloader = create_dataloader(
+        dataloader, tokenizer_info = create_dataloader(
             data_dir=data_dir,
             split='valid', # Use smaller validation split for local testing
             batch_size=4,
@@ -225,9 +226,9 @@ def main():
         print(f"Number of sequences: {len(dataset)}")
         print(f"Sequence length: {dataset.sequence_length}")
         print(f"Vocabulary sizes:")
-        print(f"  Melody tokens: {dataset.melody_vocab_size}")
-        print(f"  Chord tokens: {dataset.chord_vocab_size}")
-        print(f"  Total tokens: {dataset.vocab_size}")
+        print(f"  Melody tokens: {tokenizer_info['melody_vocab_size']}")
+        print(f"  Chord tokens: {tokenizer_info['chord_vocab_size']}")
+        print(f"  Total tokens: {tokenizer_info['total_vocab_size']}")
         
         # Test loading a batch and moving to device
         print("\nTesting batch loading...")
