@@ -45,7 +45,7 @@ python3 -m src.evaluation.visualize_model \
     "data/interim" \
     --split test \
     --task shap \
-    --save_path "shap_visualization.png"
+    --save_path "visualizations/shap_visualization_large_bg.png"
 
 echo "Visualization script finished."
-echo "Output saved to: $PROJECT_ROOT/shap_visualization.png" 
+echo "Output saved to: $PROJECT_ROOT/visualizations/shap_visualization_large_bg.png" 

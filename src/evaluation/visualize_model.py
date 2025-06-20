@@ -100,8 +100,8 @@ def explain_reward_model_with_shap(model, dataloader, device, tokenizer_info, sa
     
     test_melody = melody_tokens[0:1]
     test_chord = chord_tokens[0:1]
-    # Use a smaller, fixed-size background dataset to prevent memory issues.
-    background_melody = melody_tokens[1:6]
+    # Use the rest of the batch as the background dataset for a more stable explanation.
+    background_melody = melody_tokens[1:]
 
     def f(mel_toks):
         mel_toks = torch.from_numpy(mel_toks).to(device).long()
