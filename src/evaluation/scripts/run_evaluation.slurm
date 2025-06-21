@@ -5,7 +5,6 @@
 #SBATCH -p gh
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=1
 #SBATCH -t 01:00:00
 #SBATCH -A TRA24006
 
