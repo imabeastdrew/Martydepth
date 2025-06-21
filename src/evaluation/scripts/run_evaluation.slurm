@@ -54,7 +54,7 @@ echo "Starting online model evaluation for artifact: $ARTIFACT_PATH"
 python3 -m src.evaluation.run_evaluation \
     --artifact_path "$ARTIFACT_PATH" \
     --output_file "$PROJECT_ROOT/$OUTPUT_FILE" \
-    --data_dir "$SCRATCH/data/MartyDepth/interim" \
+    --data_dir "$PROJECT_ROOT/data/interim" \
     --batch_size 64 \
     --num_workers 8
 
