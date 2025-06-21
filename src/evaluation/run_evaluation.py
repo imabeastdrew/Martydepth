@@ -14,8 +14,7 @@ from src.data.dataset import create_dataloader
 from src.evaluation.evaluate import load_model_from_wandb, generate_online
 from src.evaluation.metrics import (
     calculate_harmony_metrics,
-    calculate_rhythm_diversity_metrics,
-    calculate_synchronization_metrics,
+    calculate_emd_metrics,
 )
 
 def main(args):
@@ -52,7 +51,7 @@ def main(args):
 
     # Generate sequences
     print("Generating accompaniments...")
-    generated_sequences = generate_online(
+    generated_sequences, ground_truth_sequences = generate_online(
         model=model,
         dataloader=dataloader,
         tokenizer_info=tokenizer_info,
@@ -65,13 +64,11 @@ def main(args):
     # Calculate metrics
     print("\n--- Calculating Metrics ---")
     harmony_metrics = calculate_harmony_metrics(generated_sequences, tokenizer_info)
-    sync_metrics = calculate_synchronization_metrics(generated_sequences, tokenizer_info)
-    rhythm_metrics = calculate_rhythm_diversity_metrics(generated_sequences, tokenizer_info)
+    emd_metrics = calculate_emd_metrics(generated_sequences, ground_truth_sequences, tokenizer_info)
 
     all_metrics = {
         **harmony_metrics,
-        **sync_metrics,
-        **rhythm_metrics,
+        **emd_metrics,
     }
 
     print("\n--- Evaluation Results ---")

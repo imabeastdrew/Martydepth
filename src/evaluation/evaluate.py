@@ -19,6 +19,7 @@ from src.evaluation.metrics import (
     calculate_harmony_metrics,
     calculate_synchronization_metrics,
     calculate_rhythm_diversity_metrics,
+    calculate_emd_metrics,
 )
 
 def load_model_from_wandb(artifact_path: str, device: torch.device):
@@ -94,9 +95,11 @@ def generate_online(model: OnlineTransformer,
     """
     Generate sequences by providing the melody and predicting the chords.
     This function is optimized to process entire batches at once.
+    Returns both the generated sequences and the corresponding ground truth sequences.
     """
     model.eval()
     generated_sequences = []
+    ground_truth_sequences = []
 
     chord_start_token_idx = tokenizer_info['melody_vocab_size']
 
@@ -108,6 +111,9 @@ def generate_online(model: OnlineTransformer,
             # The input_tokens from the dataloader are the model inputs [c1, m1, ... cn-1, mn-1]
             input_tokens = batch['input_tokens'].to(device)
             melody_tokens = input_tokens[:, 1::2] # Extract melody tokens
+
+            # The ground truth is the target tensor from the dataloader
+            ground_truth_sequences.extend(batch['target_tokens'].cpu().numpy())
 
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
@@ -144,7 +150,7 @@ def generate_online(model: OnlineTransformer,
                 generated_sequences.append(full_sequence)
 
     print(f"\nGenerated {len(generated_sequences)} sequences in online mode.")
-    return generated_sequences
+    return generated_sequences, ground_truth_sequences
 
 def main(args):
     """Main evaluation function."""
@@ -160,17 +166,17 @@ def main(args):
     model, tokenizer_info, config = load_model_from_wandb(args.artifact_path, device)
 
     # Create test dataloader (offline mode to get melody and chords separately)
-    test_loader = create_dataloader(
+    test_loader, _ = create_dataloader(
         data_dir=Path(args.data_dir),
         split="test",
         batch_size=args.batch_size,
         num_workers=0, # Easier for local debugging
         sequence_length=config['max_seq_length'],
-        mode='offline' # Get separate melody and chord tracks
+        mode='online' # Needs to be online to get target tokens
     )
     
     # Generate sequences
-    generated_sequences = generate_online(
+    generated_sequences, ground_truth_sequences = generate_online(
         model=model,
         dataloader=test_loader,
         tokenizer_info=tokenizer_info,
@@ -181,15 +187,13 @@ def main(args):
     
     # Calculate metrics
     harmony_metrics = calculate_harmony_metrics(generated_sequences, tokenizer_info)
-    sync_metrics = calculate_synchronization_metrics(generated_sequences, tokenizer_info)
-    rhythm_metrics = calculate_rhythm_diversity_metrics(generated_sequences, tokenizer_info)
+    emd_metrics = calculate_emd_metrics(generated_sequences, ground_truth_sequences, tokenizer_info)
     
     # Print results
     print("\n--- Evaluation Results ---")
     print(f"Run: {args.artifact_path}")
     print(f"Harmony: {harmony_metrics}")
-    print(f"Synchronization: {sync_metrics}")
-    print(f"Rhythm Diversity: {rhythm_metrics}")
+    print(f"EMD Metrics: {emd_metrics}")
     print("--------------------------")
 
 if __name__ == "__main__":
