@@ -19,7 +19,7 @@ from src.evaluation.metrics import (
     calculate_harmony_metrics,
     calculate_emd_metrics,
 )
-from src.config.tokenization_config import CHORD_SILENCE_TOKEN
+from src.config.tokenization_config import CHORD_SILENCE_TOKEN, CHORD_TOKEN_START
 
 def log_results_to_wandb(args, metrics, sequences, tokenizer_info):
     """Logs evaluation results and generated samples to W&B."""
@@ -97,6 +97,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
 
 def generate_offline(model: OfflineTeacherModel,
                      dataloader: torch.utils.data.DataLoader,
+                     tokenizer_info: Dict,
                      device: torch.device) -> tuple[list, list]:
     """
     Generate chord sequences for given melodies using the offline model.
@@ -106,6 +107,8 @@ def generate_offline(model: OfflineTeacherModel,
     generated_sequences = []
     ground_truth_sequences = []
     
+    chord_token_start = tokenizer_info.get("chord_token_start", CHORD_TOKEN_START)
+
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
@@ -131,7 +134,8 @@ def generate_offline(model: OfflineTeacherModel,
                 logits = model.output_head(decoder_output[:, -1, :])
                 
                 # Greedy decoding for the entire batch
-                next_tokens = logits.argmax(dim=-1).unsqueeze(1)
+                # Add the chord_token_start offset to map to the global token space
+                next_tokens = logits.argmax(dim=-1).unsqueeze(1) + chord_token_start
                 decoder_input = torch.cat([decoder_input, next_tokens], dim=1)
             
             # 4. Process and collect results for the batch
@@ -182,6 +186,7 @@ def main(args):
     generated_sequences, ground_truth_sequences = generate_offline(
         model=model,
         dataloader=test_loader,
+        tokenizer_info=tokenizer_info,
         device=device
     )
     

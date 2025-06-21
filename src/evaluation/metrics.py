@@ -29,8 +29,8 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
         active_notes = {}  # pitch -> start_time
 
         for time_step, token in enumerate(seq):
-            # Odd timesteps are melody
-            if time_step % 2 == 1:
+            # Use token value to determine type, not index
+            if token < CHORD_TOKEN_START: # It's a melody token
                 if MIDI_ONSET_START <= token < MIDI_HOLD_START:
                     pitch = token - MIDI_ONSET_START
                     if pitch in active_notes: # End previous note
@@ -45,8 +45,7 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
                         notes.append({'pitch': pitch, 'start': start_time, 'end': time_step})
                         del active_notes[pitch]
 
-            # Even timesteps are chords
-            else:
+            else: # It's a chord token
                 if token >= CHORD_TOKEN_START:
                     # Append previous chord if it exists and is different
                     if not chords or chords[-1]['token'] != token:

@@ -49,6 +49,7 @@ def main(args):
     generated_sequences, ground_truth_sequences = generate_offline(
         model=model,
         dataloader=dataloader,
+        tokenizer_info=tokenizer_info,
         device=device,
     )
     print(f"Generated {len(generated_sequences)} sequences.")
