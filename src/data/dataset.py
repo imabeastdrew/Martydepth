@@ -118,6 +118,7 @@ class FrameDataset(Dataset):
         
         return {
             'melody_tokens': melody_tokens,           # [T] - full melody sequence
+            'chord_tokens': chord_tokens,             # [T] - full ground truth chord sequence
             'chord_input': chord_tokens[:-1],         # [T-1] - causal chord input
             'chord_target': chord_tokens[1:],         # [T-1] - next chord targets
             'song_id': sequence.song_id,
@@ -242,6 +243,7 @@ def main():
             print(f"Target tokens shape: {batch['target_tokens'].shape}")
         elif mode == 'offline':  # offline mode
             print(f"Melody tokens shape: {batch['melody_tokens'].shape}")
+            print(f"Chord tokens shape: {batch['chord_tokens'].shape}")
             print(f"Chord input shape: {batch['chord_input'].shape}")
             print(f"Chord target shape: {batch['chord_target'].shape}")
         else: # contrastive
