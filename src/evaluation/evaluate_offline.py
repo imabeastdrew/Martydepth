@@ -90,6 +90,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.eval()
         
+    total_params = sum(p.numel() for p in model.parameters())
     print(f"Offline Teacher Model Initialized:\n  Architecture: {config['num_layers']}E + {config['num_layers']}D\n  Embed dimension: {config['embed_dim']}\n  Attention heads: {config['num_heads']}\n  Total parameters: {total_params:,}")
     print("Offline model loaded successfully.")
     return model, config, tokenizer_info
