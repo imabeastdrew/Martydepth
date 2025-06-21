@@ -122,7 +122,11 @@ def generate_online(model: OnlineTransformer,
             generated_so_far = torch.full((batch_size, 1), chord_start_token_idx, dtype=torch.long, device=device)
 
             for t in range(seq_length):
-                # Predict next token (which should be a chord)
+                # 1. Append the next ground truth melody token
+                current_melody_tokens = melody_tokens[:, t].unsqueeze(1)
+                generated_so_far = torch.cat([generated_so_far, current_melody_tokens], dim=1)
+
+                # 2. Predict the next token (which should be a chord)
                 logits = model(generated_so_far)[:, -1, :] / temperature
                 
                 # Top-k filtering
@@ -137,16 +141,14 @@ def generate_online(model: OnlineTransformer,
                 probs = torch.softmax(logits, dim=-1)
                 next_chord_tokens = torch.multinomial(probs, num_samples=1)
 
-                # Append the ground truth melody token *then* the generated chord
-                current_melody_tokens = melody_tokens[:, t].unsqueeze(1)
-                generated_so_far = torch.cat([generated_so_far, current_melody_tokens, next_chord_tokens], dim=1)
+                # 3. Append the generated chord token
+                generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
 
             # Collect results for the batch
-            # The generated sequence includes our prompt and the melody, so we extract only the generated part
+            # The final sequence will be [prompt, m1, c1, m2, c2, ...]
+            # The generated part for metrics should not include the initial prompt
             for i in range(batch_size):
-                # The final sequence will be [prompt, c1, m1, c2, m2, ...]
-                # We want to store the full interleaved sequence for metrics
-                full_sequence = generated_so_far[i].cpu().numpy()
+                full_sequence = generated_so_far[i, 1:].cpu().numpy()
                 generated_sequences.append(full_sequence)
 
     print(f"\nGenerated {len(generated_sequences)} sequences in online mode.")
