@@ -108,6 +108,8 @@ def generate_offline(model: OfflineTeacherModel,
     ground_truth_sequences = []
     
     chord_token_start = tokenizer_info.get("chord_token_start", CHORD_TOKEN_START)
+    # The offline model's internal silence token is 0, as it only knows about chords.
+    local_chord_silence = 0
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
@@ -122,8 +124,8 @@ def generate_offline(model: OfflineTeacherModel,
             melody_embed = model.embeddings.encode_melody(melody_tokens)
             memory = model.transformer.encoder(melody_embed)
 
-            # 2. Initialize the decoder input for the whole batch
-            decoder_input = torch.full((batch_size, 1), CHORD_SILENCE_TOKEN, dtype=torch.long, device=device)
+            # 2. Initialize the decoder input for the whole batch with the LOCAL silence token
+            decoder_input = torch.full((batch_size, 1), local_chord_silence, dtype=torch.long, device=device)
 
             # 3. Autoregressively generate chords for the whole batch
             for _ in range(seq_length):
@@ -133,21 +135,22 @@ def generate_offline(model: OfflineTeacherModel,
                 decoder_output = model.transformer.decoder(chord_embed, memory, tgt_mask=causal_mask)
                 logits = model.output_head(decoder_output[:, -1, :])
                 
-                # Greedy decoding for the entire batch
-                # Add the chord_token_start offset to map to the global token space
-                next_tokens = logits.argmax(dim=-1).unsqueeze(1) + chord_token_start
+                # Greedy decoding for the entire batch. Stays in the LOCAL token space.
+                next_tokens = logits.argmax(dim=-1).unsqueeze(1)
                 decoder_input = torch.cat([decoder_input, next_tokens], dim=1)
             
             # 4. Process and collect results for the batch
-            # Exclude the starting silence token from the generated chords
-            final_chords_batch = decoder_input[:, 1:].cpu().numpy()
+            # Exclude the starting silence token and convert the whole sequence to GLOBAL token space
+            final_chords_batch_local = decoder_input[:, 1:]
+            final_chords_batch_global = (final_chords_batch_local + chord_token_start).cpu().numpy()
+            
             final_melody_batch = melody_tokens.cpu().numpy()
             
             # The ground truth chords also need to be interleaved with the melody
             gt_chords_batch = gt_chords.cpu().numpy()
 
             for i in range(batch_size):
-                final_chords = final_chords_batch[i]
+                final_chords = final_chords_batch_global[i]
                 final_melody = final_melody_batch[i]
                 gt_chords_single = gt_chords_batch[i]
                 
