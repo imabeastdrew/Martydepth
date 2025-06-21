@@ -17,8 +17,7 @@ from src.models.offline_teacher import OfflineTeacherModel
 from src.data.dataset import create_dataloader
 from src.evaluation.metrics import (
     calculate_harmony_metrics,
-    calculate_synchronization_metrics,
-    calculate_rhythm_diversity_metrics,
+    calculate_emd_metrics,
 )
 from src.config.tokenization_config import CHORD_SILENCE_TOKEN
 
@@ -63,7 +62,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
     print(f"Found model artifact: {model_artifact.name}")
 
     run = model_artifact.logged_by()
-    config = argparse.Namespace(**run.config)
+    config = dict(run.config)
     
     with tempfile.TemporaryDirectory() as tmpdir:
         artifact_dir = model_artifact.download(root=tmpdir)
@@ -73,38 +72,45 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         with open(tokenizer_path, 'r') as f:
             tokenizer_info = json.load(f)
             
-        config.melody_vocab_size = tokenizer_info['melody_vocab_size']
-        config.chord_vocab_size = tokenizer_info['chord_vocab_size']
+        config['melody_vocab_size'] = tokenizer_info['melody_vocab_size']
+        config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
+
+        # Handle different possible key names for max_seq_length
+        max_seq_length = config.get('max_seq_length') or config.get('max_sequence_length') or 512
 
         model = OfflineTeacherModel(
-            melody_vocab_size=config.melody_vocab_size,
-            chord_vocab_size=config.chord_vocab_size,
-            embed_dim=config.embed_dim,
-            num_heads=config.num_heads,
-            num_layers=config.num_layers,
-            max_seq_length=config.max_sequence_length
+            melody_vocab_size=config['melody_vocab_size'],
+            chord_vocab_size=config['chord_vocab_size'],
+            embed_dim=config['embed_dim'],
+            num_heads=config['num_heads'],
+            num_layers=config['num_layers'],
+            max_seq_length=max_seq_length
         ).to(device)
         
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.eval()
         
-    print(f"🎵 Offline Teacher Model Initialized:\n  Architecture: {config.num_layers}E + {config.num_layers}D\n  Embed dimension: {config.embed_dim}\n  Attention heads: {config.num_heads}\n  Total parameters: {total_params:,}")
+    print(f"Offline Teacher Model Initialized:\n  Architecture: {config['num_layers']}E + {config['num_layers']}D\n  Embed dimension: {config['embed_dim']}\n  Attention heads: {config['num_heads']}\n  Total parameters: {total_params:,}")
     print("Offline model loaded successfully.")
     return model, config, tokenizer_info
 
 def generate_offline(model: OfflineTeacherModel,
                      dataloader: torch.utils.data.DataLoader,
-                     device: torch.device) -> list:
+                     device: torch.device) -> tuple[list, list]:
     """
     Generate chord sequences for given melodies using the offline model.
-    This function is optimized to process entire batches at once.
+    Returns both generated and ground_truth interleaved sequences.
     """
     model.eval()
     generated_sequences = []
+    ground_truth_sequences = []
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
+            # The ground truth chords are the targets from the dataloader
+            gt_chords = batch['chord_target'].to(device)
+
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
 
@@ -131,19 +137,31 @@ def generate_offline(model: OfflineTeacherModel,
             # Exclude the starting silence token from the generated chords
             final_chords_batch = decoder_input[:, 1:].cpu().numpy()
             final_melody_batch = melody_tokens.cpu().numpy()
+            
+            # The ground truth chords also need to be interleaved with the melody
+            gt_chords_batch = gt_chords.cpu().numpy()
 
             for i in range(batch_size):
                 final_chords = final_chords_batch[i]
                 final_melody = final_melody_batch[i]
+                gt_chords_single = gt_chords_batch[i]
+                
                 num_tokens = min(len(final_chords), len(final_melody))
                 
-                interleaved = np.empty(num_tokens * 2, dtype=np.int64)
-                interleaved[0::2] = final_chords[:num_tokens]
-                interleaved[1::2] = final_melody[:num_tokens]
-                generated_sequences.append(interleaved)
+                # Create generated interleaved sequence
+                gen_interleaved = np.empty(num_tokens * 2, dtype=np.int64)
+                gen_interleaved[0::2] = final_chords[:num_tokens]
+                gen_interleaved[1::2] = final_melody[:num_tokens]
+                generated_sequences.append(gen_interleaved)
+
+                # Create ground truth interleaved sequence
+                gt_interleaved = np.empty(num_tokens * 2, dtype=np.int64)
+                gt_interleaved[0::2] = gt_chords_single[:num_tokens]
+                gt_interleaved[1::2] = final_melody[:num_tokens]
+                ground_truth_sequences.append(gt_interleaved)
                 
     print(f"\nGenerated {len(generated_sequences)} sequences in offline mode.")
-    return generated_sequences
+    return generated_sequences, ground_truth_sequences
 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
@@ -151,26 +169,25 @@ def main(args):
     
     model, config, tokenizer_info = load_model_from_wandb(args.artifact_path, device)
 
-    test_loader = create_dataloader(
+    test_loader, _ = create_dataloader(
         data_dir=Path(args.data_dir),
         split="test",
         batch_size=args.batch_size,
         num_workers=0,
-        sequence_length=config.max_sequence_length,
+        sequence_length=config.get('max_sequence_length') or config.get('max_seq_length'),
         mode='offline'
     )
     
-    generated_sequences = generate_offline(
+    generated_sequences, ground_truth_sequences = generate_offline(
         model=model,
         dataloader=test_loader,
         device=device
     )
     
     harmony_metrics = calculate_harmony_metrics(generated_sequences, tokenizer_info)
-    sync_metrics = calculate_synchronization_metrics(generated_sequences, tokenizer_info)
-    rhythm_metrics = calculate_rhythm_diversity_metrics(generated_sequences, tokenizer_info)
+    emd_metrics = calculate_emd_metrics(generated_sequences, ground_truth_sequences, tokenizer_info)
     
-    all_metrics = {**harmony_metrics, **sync_metrics, **rhythm_metrics}
+    all_metrics = {**harmony_metrics, **emd_metrics}
     
     print("\n--- Offline Evaluation Results ---")
     print(f"Artifact: {args.artifact_path}")
