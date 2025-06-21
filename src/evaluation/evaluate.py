@@ -137,9 +137,9 @@ def generate_online(model: OnlineTransformer,
                 probs = torch.softmax(logits, dim=-1)
                 next_chord_tokens = torch.multinomial(probs, num_samples=1)
 
-                # Append the generated chord and the next ground-truth melody token
+                # Append the ground truth melody token *then* the generated chord
                 current_melody_tokens = melody_tokens[:, t].unsqueeze(1)
-                generated_so_far = torch.cat([generated_so_far, next_chord_tokens, current_melody_tokens], dim=1)
+                generated_so_far = torch.cat([generated_so_far, current_melody_tokens, next_chord_tokens], dim=1)
 
             # Collect results for the batch
             # The generated sequence includes our prompt and the melody, so we extract only the generated part
