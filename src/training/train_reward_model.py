@@ -232,7 +232,12 @@ def main(config):
                     f"contrastive_reward-{wandb.run.id}",
                     type="model",
                     description="Contrastive reward model for melody-chord scoring.",
-                    metadata=config
+                    metadata={
+                        **config,
+                        "epoch": epoch + 1,
+                        "validation_loss": best_valid_loss,
+                        "top1_accuracy": top1_accuracy
+                    }
                 )
                 # Add both files to the artifact
                 artifact.add_file(model_path)

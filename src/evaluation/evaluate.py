@@ -50,7 +50,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
     run = model_artifact.logged_by()
     
     # Get config
-    config = argparse.Namespace(**run.config)
+    config = dict(run.config)
     
     # Download artifact files
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -62,26 +62,28 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         with open(tokenizer_path, 'r') as f:
             tokenizer_info = json.load(f)
             
-        # Update config with tokenizer info
-        config.vocab_size = tokenizer_info['total_vocab_size']
-        config.melody_vocab_size = tokenizer_info['melody_vocab_size']
-        config.chord_vocab_size = tokenizer_info['chord_vocab_size']
+        # The online transformer is for a combined vocabulary
+        vocab_size = tokenizer_info['total_vocab_size']
+
+        # Handle different possible key names for max_seq_length
+        max_seq_length = config.get('max_sequence_length') or 512
 
         # Instantiate model
         model = OnlineTransformer(
-            vocab_size=config.vocab_size,
-            embed_dim=config.embed_dim,
-            num_heads=config.num_heads,
-            num_layers=config.num_layers,
-            max_seq_length=config.max_sequence_length
+            vocab_size=vocab_size,
+            embed_dim=config['embed_dim'],
+            num_heads=config['num_heads'],
+            num_layers=config['num_layers'],
+            max_seq_length=max_seq_length
         ).to(device)
         
         # Load state dict
+        # Note: Using weights_only=True is a security best practice
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.eval()
         
     print("Model loaded successfully.")
-    return model, config, tokenizer_info
+    return model, tokenizer_info, config
 
 def generate_online(model: OnlineTransformer,
                     dataloader: torch.utils.data.DataLoader,
@@ -100,7 +102,13 @@ def generate_online(model: OnlineTransformer,
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating online sequences"):
-            melody_tokens = batch['melody_tokens'].to(device)
+            # In 'online' mode, the dataloader provides an interleaved sequence.
+            # We only need the melody part as the prompt for generation.
+            # Melody tokens are at odd indices [c1, m1, c2, m2, ...]
+            # The input_tokens from the dataloader are the model inputs [c1, m1, ... cn-1, mn-1]
+            input_tokens = batch['input_tokens'].to(device)
+            melody_tokens = input_tokens[:, 1::2] # Extract melody tokens
+
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
 
@@ -149,7 +157,7 @@ def main(args):
     print(f"Using device: {device}")
     
     # Load model
-    model, config, tokenizer_info = load_model_from_wandb(args.artifact_path, device)
+    model, tokenizer_info, config = load_model_from_wandb(args.artifact_path, device)
 
     # Create test dataloader (offline mode to get melody and chords separately)
     test_loader = create_dataloader(
@@ -157,7 +165,7 @@ def main(args):
         split="test",
         batch_size=args.batch_size,
         num_workers=0, # Easier for local debugging
-        sequence_length=config.max_sequence_length,
+        sequence_length=config['max_seq_length'],
         mode='offline' # Get separate melody and chord tracks
     )
     
