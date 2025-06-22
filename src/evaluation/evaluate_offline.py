@@ -149,17 +149,6 @@ def generate_offline(model: OfflineTeacherModel,
             # The ground truth chords are already global
             gt_chords_batch = gt_chords.cpu().numpy()
 
-            # --- DEBUGGING: Print shapes and sample data ---
-            print(f"\n--- DEBUG ---")
-            print(f"Shape of generated chords (global): {final_chords_batch_global.shape}")
-            print(f"Sample generated chords (global): {final_chords_batch_global[0, :10]}")
-            print(f"Shape of ground truth chords: {gt_chords_batch.shape}")
-            print(f"Sample ground truth chords: {gt_chords_batch[0, :10]}")
-            print(f"Shape of melody: {final_melody_batch.shape}")
-            print(f"Sample melody: {final_melody_batch[0, :10]}")
-            print(f"-------------")
-            # --- END DEBUGGING ---
-
             for i in range(batch_size):
                 final_chords = final_chords_batch_global[i]
                 final_melody = final_melody_batch[i]

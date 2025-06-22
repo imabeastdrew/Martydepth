@@ -144,6 +144,14 @@ def generate_online(model: OnlineTransformer,
                 # 3. Append the generated chord token
                 generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
 
+            # --- DEBUGGING ---
+            print("\n--- DEBUG ---")
+            # We skip the first token of generated_so_far as it's the prompt
+            print(f"Sample generated sequence (first 20 tokens): {generated_so_far[0, 1:].cpu().numpy()[:20]}")
+            print(f"Sample ground truth sequence (first 20 tokens): {batch['target_tokens'][0].cpu().numpy()[:20]}")
+            print("-------------")
+            # --- END DEBUGGING ---
+
             # Collect results for the batch
             # The final sequence will be [prompt, m1, c1, m2, c2, ...]
             # The generated part for metrics should not include the initial prompt
