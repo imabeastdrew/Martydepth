@@ -26,36 +26,37 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
     for seq in sequences:
         notes = []
         chords = []
-        active_notes = {}  # pitch -> start_time
+        active_note = None  # For monophonic melody, only one note can be active
 
         for time_step, token in enumerate(seq):
-            # Use token value to determine type, not index
-            if token < CHORD_TOKEN_START: # It's a melody token
-                if MIDI_ONSET_START <= token < MIDI_HOLD_START:
-                    pitch = token - MIDI_ONSET_START
-                    if pitch in active_notes: # End previous note
-                        notes.append({'pitch': pitch, 'start': active_notes.pop(pitch), 'end': time_step})
-                    active_notes[pitch] = time_step # Start new note
-                elif MIDI_HOLD_START <= token < CHORD_TOKEN_START:
-                    pitch = token - MIDI_HOLD_START
-                    # This is a hold token, we just continue the note
-                elif token == SILENCE_TOKEN and len(active_notes) > 0:
-                     # End all active notes on silence
-                    for pitch, start_time in list(active_notes.items()):
-                        notes.append({'pitch': pitch, 'start': start_time, 'end': time_step})
-                        del active_notes[pitch]
+            # --- Melody Parsing ---
+            if token < CHORD_TOKEN_START:
+                is_onset = MIDI_ONSET_START <= token < MIDI_HOLD_START
+                is_silence = token == SILENCE_TOKEN
 
-            else: # It's a chord token
+                if is_onset:
+                    pitch = token - MIDI_ONSET_START
+                    # If a note was already playing, end it.
+                    if active_note:
+                        notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': time_step})
+                    # Start the new note
+                    active_note = {'pitch': pitch, 'start': time_step}
+                elif is_silence:
+                    if active_note:
+                        notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': time_step})
+                        active_note = None
+            
+            # --- Chord Parsing ---
+            else:
                 if token >= CHORD_TOKEN_START:
-                    # Append previous chord if it exists and is different
                     if not chords or chords[-1]['token'] != token:
                         if chords:
                             chords[-1]['end'] = time_step
                         chords.append({'token': token, 'start': time_step, 'end': -1})
 
         # Finalize any open notes/chords
-        for pitch, start_time in active_notes.items():
-            notes.append({'pitch': pitch, 'start': start_time, 'end': len(seq)})
+        if active_note:
+            notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': len(seq)})
         if chords:
             chords[-1]['end'] = len(seq)
             
