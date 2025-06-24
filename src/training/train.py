@@ -10,7 +10,7 @@ from tqdm import tqdm
 import wandb
 import yaml
 import json
-from torch.optim import AdamW
+from transformers import Adafactor
 from torch.optim.lr_scheduler import LambdaLR
 
 from src.models.online_transformer import OnlineTransformer
@@ -75,7 +75,12 @@ def main(config: dict):
 
     # --- Training Components ---
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('pad_token_id', -100))
-    optimizer = AdamW(model.parameters(), lr=config['learning_rate'])
+    optimizer = Adafactor(
+        model.parameters(), 
+        lr=config['learning_rate'], 
+        scale_parameter=False, 
+        relative_step=False
+    )
     total_steps = len(train_loader) * config['max_epochs']
     scheduler = get_warmup_schedule(
         optimizer,
@@ -127,7 +132,7 @@ def main(config: dict):
         avg_train_loss = total_train_loss / len(train_loader)
         
         # --- Validation Loop ---
-        model.eval()
+        # model.eval() # Keep model in train() mode to keep dropout active
         total_valid_loss = 0
         nan_batches = 0
         with torch.no_grad():
@@ -155,6 +160,9 @@ def main(config: dict):
                 
                 total_valid_loss += loss.item()
                 pbar_valid.set_postfix({'loss': loss.item()})
+                
+        # --- After Validation ---
+        model.train() # Explicitly set back to train mode
 
         # Avoid division by zero if all batches were NaN
         num_valid_batches = len(valid_loader) - nan_batches
