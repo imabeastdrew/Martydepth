@@ -2,7 +2,7 @@
 
 # Data args
 data_dir: "data/interim"
-max_seq_length: 32
+max_seq_length: 16
 
 # Model args
 embed_dim: 512
