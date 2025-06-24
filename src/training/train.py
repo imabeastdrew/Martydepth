@@ -77,7 +77,6 @@ def main(config: dict):
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('pad_token_id', -100))
     optimizer = Adafactor(
         model.parameters(), 
-        lr=config['learning_rate'], 
         scale_parameter=True, 
         relative_step=True
     )
@@ -121,9 +120,13 @@ def main(config: dict):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_val'])
             optimizer.step()
+            
+            # The scheduler is still needed to manage the warmup phase with Adafactor
             scheduler.step()
 
-            lr = optimizer.param_groups[0]['lr']
+            # When using relative_step, the LR is managed internally by Adafactor
+            # We can log the last_lr from the scheduler to see the warmup progress
+            lr = scheduler.get_last_lr()[0]
             total_train_loss += loss.item()
             global_step += 1
             pbar.set_postfix({'loss': loss.item(), 'lr': lr})
