@@ -16,8 +16,10 @@ class Encoder(nn.Module):
                  num_heads: int = 8,
                  num_layers: int = 6,
                  dropout: float = 0.1,
-                 max_seq_length: int = 512):
+                 max_seq_length: int = 512,
+                 pad_token_id: int = -100):
         super().__init__()
+        self.pad_token_id = pad_token_id
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(max_seq_length + 1, embed_dim)
         
@@ -41,7 +43,13 @@ class Encoder(nn.Module):
 
         positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
         
-        token_embeds = self.token_embedding(tokens)
+        # Replace pad tokens with a valid index (0) before embedding
+        safe_tokens = tokens.clone()
+        safe_tokens[tokens == self.pad_token_id] = 0
+        token_embeds = self.token_embedding(safe_tokens)
+        # Zero out embeddings for pad tokens after lookup
+        token_embeds[tokens == self.pad_token_id] = 0.0
+        
         pos_embeds = self.position_embedding(positions)
         
         x = token_embeds + pos_embeds
@@ -81,7 +89,8 @@ class ContrastiveRewardModel(nn.Module):
                  num_heads: int = 8,
                  num_layers: int = 6,
                  dropout: float = 0.1,
-                 max_seq_length: int = 512):
+                 max_seq_length: int = 512,
+                 pad_token_id: int = -100):
         super().__init__()
         
         self.melody_encoder = Encoder(
@@ -90,7 +99,8 @@ class ContrastiveRewardModel(nn.Module):
             num_heads=num_heads,
             num_layers=num_layers,
             dropout=dropout,
-            max_seq_length=max_seq_length
+            max_seq_length=max_seq_length,
+            pad_token_id=pad_token_id
         )
         
         self.chord_encoder = Encoder(
@@ -99,7 +109,8 @@ class ContrastiveRewardModel(nn.Module):
             num_heads=num_heads,
             num_layers=num_layers,
             dropout=dropout,
-            max_seq_length=max_seq_length
+            max_seq_length=max_seq_length,
+            pad_token_id=pad_token_id
         )
 
     def forward(self, 

@@ -102,6 +102,8 @@ def main(config):
     )
     
     # Model
+    pad_token_id = tokenizer_info.get('pad_token_id', -100)
+
     model = ContrastiveRewardModel(
         melody_vocab_size=tokenizer_info['melody_vocab_size'],
         chord_vocab_size=tokenizer_info['chord_vocab_size'],
@@ -109,10 +111,9 @@ def main(config):
         num_heads=config['num_heads'],
         num_layers=config['num_layers'],
         dropout=config['dropout'],
-        max_seq_length=config['max_seq_length']
+        max_seq_length=config['max_seq_length'],
+        pad_token_id=pad_token_id
     ).to(device)
-    
-    pad_token_id = tokenizer_info.get('pad_token_id', -100)
     
     wandb.watch(model, log='all')
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
