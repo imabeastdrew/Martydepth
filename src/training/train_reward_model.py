@@ -67,92 +67,128 @@ def main(config):
     if 'wandb_project' not in config:
         raise ValueError("wandb_project not found in config")
 
-    # --- Loop over specified sequence lengths for multi-scale training ---
-    sequence_lengths = config.get('sequence_lengths', [config.get('max_seq_length', 256)])
-    print(f"Starting multi-scale training for sequence lengths: {sequence_lengths}")
+    # --- W&B Setup ---
+    run_name = (
+        f"contrastive_L{config['num_layers']}_H{config['num_heads']}"
+        f"_D{config['embed_dim']}_seq{config['max_seq_length']}"
+        f"_bs{config['batch_size']}_lr{config['learning_rate']}"
+    )
 
-    for seq_len in sequence_lengths:
-        print(f"\n{'='*20} Training for sequence length: {seq_len} {'='*20}")
-        
-        # --- Create a specific config for this run ---
-        run_config = config.copy()
-        run_config['max_seq_length'] = seq_len
+    wandb.init(
+        project=config['wandb_project'],
+        name=run_name,
+        config=config,
+        job_type="contrastive_training"
+    )
 
-        # --- W&B Setup ---
-        run_name = (
-            f"contrastive_L{run_config['num_layers']}_H{run_config['num_heads']}"
-            f"_D{run_config['embed_dim']}_seq{run_config['max_seq_length']}"
-            f"_bs{run_config['batch_size']}_lr{run_config['learning_rate']}"
-        )
+    # Dataloaders
+    train_loader, tokenizer_info = create_dataloader(
+        data_dir=Path(config['data_dir']),
+        split="train",
+        batch_size=config['batch_size'],
+        num_workers=config['num_workers'],
+        sequence_length=config['max_seq_length'],
+        mode='contrastive',
+        shuffle=True
+    )
+    valid_loader, _ = create_dataloader(
+        data_dir=Path(config['data_dir']),
+        split="valid",
+        batch_size=config['batch_size'],
+        num_workers=config['num_workers'],
+        sequence_length=config['max_seq_length'],
+        mode='contrastive',
+        shuffle=False
+    )
+    
+    # Model
+    pad_token_id = tokenizer_info.get('pad_token_id', -100)
 
-        wandb.init(
-            project=run_config['wandb_project'],
-            name=run_name,
-            config=run_config,
-            job_type="contrastive_training",
-            reinit=True # Allow re-initialization for each loop
-        )
+    model = ContrastiveRewardModel(
+        melody_vocab_size=tokenizer_info['melody_vocab_size'],
+        chord_vocab_size=tokenizer_info['chord_vocab_size'],
+        embed_dim=config['embed_dim'],
+        num_heads=config['num_heads'],
+        num_layers=config['num_layers'],
+        dropout=config['dropout'],
+        max_seq_length=config['max_seq_length'],
+        pad_token_id=pad_token_id
+    ).to(device)
+    
+    wandb.watch(model, log='all')
+    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
 
-        # Dataloaders
-        train_loader, tokenizer_info = create_dataloader(
-            data_dir=Path(config['data_dir']),
-            split="train",
-            batch_size=config['batch_size'],
-            num_workers=config['num_workers'],
-            sequence_length=config['max_seq_length'],
-            mode='contrastive',
-            shuffle=True
-        )
-        valid_loader, _ = create_dataloader(
-            data_dir=Path(config['data_dir']),
-            split="valid",
-            batch_size=config['batch_size'],
-            num_workers=config['num_workers'],
-            sequence_length=config['max_seq_length'],
-            mode='contrastive',
-            shuffle=False
-        )
-        
-        # Model
-        pad_token_id = tokenizer_info.get('pad_token_id', -100)
+    # Loss and optimizer
+    loss_fn = InfoNCELoss(temperature=config['temperature'])
+    optimizer = Adam(model.parameters(), lr=config['learning_rate'])
 
-        model = ContrastiveRewardModel(
-            melody_vocab_size=tokenizer_info['melody_vocab_size'],
-            chord_vocab_size=tokenizer_info['chord_vocab_size'],
-            embed_dim=run_config['embed_dim'],
-            num_heads=run_config['num_heads'],
-            num_layers=run_config['num_layers'],
-            dropout=run_config['dropout'],
-            max_seq_length=run_config['max_seq_length'],
-            pad_token_id=pad_token_id
-        ).to(device)
-        
-        wandb.watch(model, log='all')
-        print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters for seq_len={seq_len}.")
-
-        # Loss and optimizer
-        loss_fn = InfoNCELoss(temperature=run_config['temperature'])
-        optimizer = Adam(model.parameters(), lr=run_config['learning_rate'])
-
-        # Training loop
-        best_valid_loss = float('inf')
-        global_step = 0
-
-        print(f"\n--- Starting Training for seq_len={seq_len} ---")
-        for epoch in range(run_config['epochs']):
-            model.train()
-            total_train_loss = 0
+    # --- Smoke Test ---
+    if config.get('smoke_test', False):
+        print("\n--- Smoke test: Model and data loaded correctly. ---")
+        try:
+            batch = next(iter(train_loader))
+            melody_tokens = batch['melody_tokens'].to(device)
+            chord_tokens = batch['chord_tokens'].to(device)
             
-            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{run_config['epochs']} [Training, L={seq_len}]")
-            for batch in pbar:
+            model(melody_tokens, chord_tokens) # Test one forward pass
+            
+            print("--- Smoke test successful: Single forward pass completed. ---")
+        except Exception as e:
+            print(f"--- Smoke test failed during forward pass: {e} ---")
+        return
+
+    # Training loop
+    best_valid_loss = float('inf')
+    global_step = 0
+
+    print(f"\n--- Starting Training ---")
+    for epoch in range(config['epochs']):
+        model.train()
+        total_train_loss = 0
+        
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Training]")
+        for batch in pbar:
+            melody_tokens = batch['melody_tokens'].to(device)
+            chord_tokens = batch['chord_tokens'].to(device)
+            
+            # Create padding masks
+            melody_mask = (melody_tokens == pad_token_id)
+            chord_mask = (chord_tokens == pad_token_id)
+
+            optimizer.zero_grad()
+            
+            melody_embeds, chord_embeds = model(
+                melody_tokens, 
+                chord_tokens,
+                melody_padding_mask=melody_mask,
+                chord_padding_mask=chord_mask
+            )
+            loss = loss_fn(melody_embeds, chord_embeds)
+
+            loss.backward()
+            optimizer.step()
+            
+            lr = optimizer.param_groups[0]['lr']
+            total_train_loss += loss.item()
+            global_step += 1
+            pbar.set_postfix({'loss': loss.item(), 'lr': lr})
+            wandb.log({'train/step_loss': loss.item(), 'train/learning_rate': lr}, step=global_step)
+
+        avg_train_loss = total_train_loss / len(train_loader)
+        
+        # Validation loop
+        model.eval()
+        total_valid_loss = 0
+        all_ranks = []
+        with torch.no_grad():
+            pbar_valid = tqdm(valid_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Validation]")
+            for batch in pbar_valid:
                 melody_tokens = batch['melody_tokens'].to(device)
                 chord_tokens = batch['chord_tokens'].to(device)
                 
                 # Create padding masks
                 melody_mask = (melody_tokens == pad_token_id)
                 chord_mask = (chord_tokens == pad_token_id)
-
-                optimizer.zero_grad()
                 
                 melody_embeds, chord_embeds = model(
                     melody_tokens, 
@@ -161,95 +197,62 @@ def main(config):
                     chord_padding_mask=chord_mask
                 )
                 loss = loss_fn(melody_embeds, chord_embeds)
-
-                loss.backward()
-                optimizer.step()
                 
-                lr = optimizer.param_groups[0]['lr']
-                total_train_loss += loss.item()
-                global_step += 1
-                pbar.set_postfix({'loss': loss.item(), 'lr': lr})
-                wandb.log({'train/step_loss': loss.item(), 'train/learning_rate': lr}, step=global_step)
+                total_valid_loss += loss.item()
+                pbar_valid.set_postfix({'loss': loss.item()})
 
-            avg_train_loss = total_train_loss / len(train_loader)
-            
-            # Validation loop
-            model.eval()
-            total_valid_loss = 0
-            all_ranks = []
-            with torch.no_grad():
-                pbar_valid = tqdm(valid_loader, desc=f"Epoch {epoch+1}/{run_config['epochs']} [Validation, L={seq_len}]")
-                for batch in pbar_valid:
-                    melody_tokens = batch['melody_tokens'].to(device)
-                    chord_tokens = batch['chord_tokens'].to(device)
-                    
-                    # Create padding masks
-                    melody_mask = (melody_tokens == pad_token_id)
-                    chord_mask = (chord_tokens == pad_token_id)
-                    
-                    melody_embeds, chord_embeds = model(
-                        melody_tokens, 
-                        chord_tokens,
-                        melody_padding_mask=melody_mask,
-                        chord_padding_mask=chord_mask
-                    )
-                    loss = loss_fn(melody_embeds, chord_embeds)
-                    
-                    total_valid_loss += loss.item()
-                    pbar_valid.set_postfix({'loss': loss.item()})
+                # Calculate Top-1 Accuracy
+                logits = torch.matmul(F.normalize(melody_embeds, p=2, dim=1), F.normalize(chord_embeds, p=2, dim=1).T)
+                sorted_indices = torch.argsort(logits, descending=True, dim=1)
+                labels = torch.arange(len(logits), device=logits.device)
+                ranks = (sorted_indices == labels[:, None]).nonzero(as_tuple=True)[1] + 1
+                all_ranks.extend(ranks.cpu().numpy())
 
-                    # Calculate Top-1 Accuracy
-                    logits = torch.matmul(F.normalize(melody_embeds, p=2, dim=1), F.normalize(chord_embeds, p=2, dim=1).T)
-                    sorted_indices = torch.argsort(logits, descending=True, dim=1)
-                    labels = torch.arange(len(logits), device=logits.device)
-                    ranks = (sorted_indices == labels[:, None]).nonzero(as_tuple=True)[1] + 1
-                    all_ranks.extend(ranks.cpu().numpy())
+        avg_valid_loss = total_valid_loss / len(valid_loader)
+        top1_accuracy = np.mean(np.array(all_ranks) == 1) * 100
 
-            avg_valid_loss = total_valid_loss / len(valid_loader)
-            top1_accuracy = np.mean(np.array(all_ranks) == 1) * 100
-
-            print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_valid_loss:.4f}, Top-1 Acc: {top1_accuracy:.2f}%")
-            wandb.log({
-                'train/epoch_loss': avg_train_loss,
-                'valid/epoch_loss': avg_valid_loss,
-                'valid/top1_accuracy': top1_accuracy,
-                'epoch': epoch + 1
-            }, step=global_step)
-            
-            # Save best model
-            if avg_valid_loss < best_valid_loss:
-                best_valid_loss = avg_valid_loss
-                
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    tmpdir_path = Path(tmpdir)
-                    # Save model weights with a consistent name
-                    model_path = tmpdir_path / "model.pth"
-                    torch.save(model.state_dict(), model_path)
-                    
-                    # Save the tokenizer info
-                    tokenizer_path = tmpdir_path / "tokenizer_info.json"
-                    with open(tokenizer_path, 'w') as f:
-                        json.dump(tokenizer_info, f, indent=4)
-                    
-                    # Save metadata
-                    metadata_path = tmpdir_path / "metadata.json"
-                    with open(metadata_path, 'w') as f:
-                        # Add validation metrics to metadata
-                        run_config['best_val_loss'] = best_valid_loss
-                        run_config['top1_accuracy'] = top1_accuracy
-                        json.dump(run_config, f, indent=4)
-                    
-                    # Log as artifact
-                    artifact = wandb.Artifact(
-                        name=f"contrastive-L{seq_len}-{wandb.run.id}",
-                        type="reward_model",
-                        metadata=run_config
-                    )
-                    artifact.add_dir(str(tmpdir_path))
-                    wandb.log_artifact(artifact)
-                    print(f"  Best model for seq_len={seq_len} saved with val_loss: {best_valid_loss:.4f}")
+        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_valid_loss:.4f}, Top-1 Acc: {top1_accuracy:.2f}%")
+        wandb.log({
+            'train/epoch_loss': avg_train_loss,
+            'valid/epoch_loss': avg_valid_loss,
+            'valid/top1_accuracy': top1_accuracy,
+            'epoch': epoch + 1
+        }, step=global_step)
         
-        wandb.finish() # Finish the run for the current sequence length
+        # Save best model
+        if avg_valid_loss < best_valid_loss:
+            best_valid_loss = avg_valid_loss
+            
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir_path = Path(tmpdir)
+                # Save model weights with a consistent name
+                model_path = tmpdir_path / "model.pth"
+                torch.save(model.state_dict(), model_path)
+                
+                # Save the tokenizer info
+                tokenizer_path = tmpdir_path / "tokenizer_info.json"
+                with open(tokenizer_path, 'w') as f:
+                    json.dump(tokenizer_info, f, indent=4)
+                
+                # Save metadata
+                metadata_path = tmpdir_path / "metadata.json"
+                with open(metadata_path, 'w') as f:
+                    # Add validation metrics to metadata
+                    config['best_val_loss'] = best_valid_loss
+                    config['top1_accuracy'] = top1_accuracy
+                    json.dump(config, f, indent=4)
+                
+                # Log as artifact
+                artifact = wandb.Artifact(
+                    name=f"contrastive-L{config['max_seq_length']}-{wandb.run.id}",
+                    type="reward_model",
+                    metadata=config
+                )
+                artifact.add_dir(str(tmpdir_path))
+                wandb.log_artifact(artifact)
+                print(f"  Best model saved with val_loss: {best_valid_loss:.4f}")
+    
+    wandb.finish()
 
 def get_config_from_yaml(yaml_path):
     with open(yaml_path, 'r') as file:
