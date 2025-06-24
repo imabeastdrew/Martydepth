@@ -163,6 +163,12 @@ class FrameDataset(Dataset):
         # Load the single FrameSequence object from its pickle file
         with open(sequence_path, 'rb') as f:
             sequence = pickle.load(f)
+
+        # The pickle file contains a FrameSequence object that may be longer
+        # than the desired sequence_length. Truncate it if necessary.
+        if len(sequence.melody_tokens) > self.sequence_length:
+            sequence.melody_tokens = sequence.melody_tokens[:self.sequence_length]
+            sequence.chord_tokens = sequence.chord_tokens[:self.sequence_length]
         
         # The pickle file contains a FrameSequence object
         # that already has the correct sequence length.
