@@ -27,15 +27,17 @@ class OnlineTransformer(nn.Module):
                  num_heads: int = 8,
                  num_layers: int = 8,
                  dropout: float = 0.1,
-                 max_seq_length: int = 512):
+                 max_seq_length: int = 512,
+                 pad_token_id: int = -100):
         super().__init__()
         
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
+        self.pad_token_id = pad_token_id
         
         # Single embedding table for all tokens
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
-        self.position_embedding = nn.Embedding(max_seq_length, embed_dim)
+        self.position_embedding = nn.Embedding(max_seq_length + 1, embed_dim)
         
         # Transformer layers
         encoder_layer = nn.TransformerEncoderLayer(
@@ -77,8 +79,12 @@ class OnlineTransformer(nn.Module):
         positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
         causal_mask = self.create_causal_mask(seq_length).to(tokens.device)
         
-        # Get embeddings
-        token_embeds = self.token_embedding(tokens)
+        # Get embeddings safely
+        safe_tokens = tokens.clone()
+        safe_tokens[tokens == self.pad_token_id] = 0
+        token_embeds = self.token_embedding(safe_tokens)
+        token_embeds[tokens == self.pad_token_id] = 0.0
+
         pos_embeds = self.position_embedding(positions)
         
         # Combine embeddings

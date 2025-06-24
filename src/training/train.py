@@ -66,7 +66,8 @@ def main(config: dict):
         num_heads=config['num_heads'],
         num_layers=config['num_layers'],
         dropout=config['dropout'],
-        max_seq_length=config['max_sequence_length']
+        max_seq_length=config['max_sequence_length'],
+        pad_token_id=tokenizer_info.get('pad_token_id', -100)
     ).to(device)
     
     wandb.watch(model, log='all')
