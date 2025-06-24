@@ -78,8 +78,8 @@ def main(config: dict):
     optimizer = Adafactor(
         model.parameters(), 
         lr=config['learning_rate'], 
-        scale_parameter=False, 
-        relative_step=False
+        scale_parameter=True, 
+        relative_step=True
     )
     total_steps = len(train_loader) * config['max_epochs']
     scheduler = get_warmup_schedule(
@@ -132,7 +132,7 @@ def main(config: dict):
         avg_train_loss = total_train_loss / len(train_loader)
         
         # --- Validation Loop ---
-        # model.eval() # Keep model in train() mode to keep dropout active
+        model.eval() # Set model to evaluation mode
         total_valid_loss = 0
         nan_batches = 0
         with torch.no_grad():
@@ -161,9 +161,6 @@ def main(config: dict):
                 total_valid_loss += loss.item()
                 pbar_valid.set_postfix({'loss': loss.item()})
                 
-        # --- After Validation ---
-        model.train() # Explicitly set back to train mode
-
         # Avoid division by zero if all batches were NaN
         num_valid_batches = len(valid_loader) - nan_batches
         avg_valid_loss = total_valid_loss / num_valid_batches if num_valid_batches > 0 else float('nan')
