@@ -10,7 +10,7 @@ from tqdm import tqdm
 import wandb
 import yaml
 import json
-from transformers import Adafactor
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
 from src.models.online_transformer import OnlineTransformer
@@ -75,12 +75,7 @@ def main(config: dict):
 
     # --- Training Components ---
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('pad_token_id', -100))
-    optimizer = Adafactor(
-        model.parameters(), 
-        lr=config['learning_rate'], 
-        scale_parameter=False, 
-        relative_step=False
-    )
+    optimizer = AdamW(model.parameters(), lr=config['learning_rate'])
     total_steps = len(train_loader) * config['max_epochs']
     scheduler = get_warmup_schedule(
         optimizer,

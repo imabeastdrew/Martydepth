@@ -2,7 +2,7 @@
 
 # Data args
 data_dir: "data/interim"
-max_seq_length: 256 # Note: dataloader will request 2*this length
+max_seq_length: 512
 
 # Model args
 embed_dim: 512

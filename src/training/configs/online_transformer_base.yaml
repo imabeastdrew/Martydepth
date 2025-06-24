@@ -18,7 +18,7 @@ weight_decay: 0.01
 max_epochs: 50
 warmup_steps: 1000
 gradient_clip_val: 1.0
-log_every_n_steps: 100
+log_every_n_steps: 1000
 
 # --- W&B Logging ---
 wandb_project: "martydepth"
