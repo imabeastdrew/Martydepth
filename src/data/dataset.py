@@ -13,7 +13,7 @@ import numpy as np
 from dataclasses import dataclass
 
 from src.data.datastructures import FrameSequence
-from src.config.tokenization_config import SILENCE_TOKEN
+from src.config.tokenization_config import PAD_MELODY, PAD_CHORD
 
 class FrameDataset(Dataset):
     """PyTorch Dataset for loading frame sequences"""
@@ -98,9 +98,8 @@ class FrameDataset(Dataset):
         input_tokens = torch.tensor(full_interleaved[:-1], dtype=torch.long)
         target_tokens = torch.tensor(full_interleaved[1:], dtype=torch.long)
 
-        # Create padding mask: True for padding tokens (silence), False otherwise
-        # The online model uses a single, shared silence token for melody and chords.
-        padding_mask = (input_tokens == SILENCE_TOKEN)
+        # Create padding mask: True for padding tokens, False otherwise
+        padding_mask = (input_tokens == PAD_MELODY) | (input_tokens == PAD_CHORD)
         
         return {
             'input_tokens': input_tokens,
@@ -147,6 +146,9 @@ class FrameDataset(Dataset):
         # Load the single FrameSequence object from its pickle file
         with open(sequence_path, 'rb') as f:
             sequence = pickle.load(f)
+        
+        # The pickle file contains a FrameSequence object
+        # that already has the correct sequence length.
         
         if self.mode == 'online':
             return self._get_online_format(sequence)

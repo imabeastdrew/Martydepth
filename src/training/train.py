@@ -73,7 +73,7 @@ def main(config: dict):
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
 
     # --- Training Components ---
-    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('silence_token_idx', -100))
+    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('pad_token_id', -100))
     optimizer = Adafactor(
         model.parameters(), 
         lr=config['learning_rate'], 
@@ -112,9 +112,10 @@ def main(config: dict):
         for batch in pbar:
             input_tokens = batch['input_tokens'].to(device)
             target_tokens = batch['target_tokens'].to(device)
+            padding_mask = batch['padding_mask'].to(device)
             
             optimizer.zero_grad()
-            logits = model(input_tokens)
+            logits = model(input_tokens, padding_mask=padding_mask)
             loss = loss_fn(logits.view(-1, config['vocab_size']), target_tokens.view(-1))
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_val'])
@@ -137,8 +138,9 @@ def main(config: dict):
             for batch in pbar_valid:
                 input_tokens = batch['input_tokens'].to(device)
                 target_tokens = batch['target_tokens'].to(device)
+                padding_mask = batch['padding_mask'].to(device)
                 
-                logits = model(input_tokens)
+                logits = model(input_tokens, padding_mask=padding_mask)
                 loss = loss_fn(logits.view(-1, config['vocab_size']), target_tokens.view(-1))
                 total_valid_loss += loss.item()
                 pbar_valid.set_postfix({'loss': loss.item()})

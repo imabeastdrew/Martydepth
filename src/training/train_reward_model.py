@@ -112,6 +112,8 @@ def main(config):
         max_seq_length=config['max_seq_length']
     ).to(device)
     
+    pad_token_id = tokenizer_info.get('pad_token_id', -100)
+    
     wandb.watch(model, log='all')
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
 
@@ -163,9 +165,18 @@ def main(config):
             melody_tokens = batch['melody_tokens'].to(device)
             chord_tokens = batch['chord_tokens'].to(device)
             
+            # Create padding masks
+            melody_mask = (melody_tokens == pad_token_id)
+            chord_mask = (chord_tokens == pad_token_id)
+
             optimizer.zero_grad()
             
-            melody_embeds, chord_embeds = model(melody_tokens, chord_tokens)
+            melody_embeds, chord_embeds = model(
+                melody_tokens, 
+                chord_tokens,
+                melody_padding_mask=melody_mask,
+                chord_padding_mask=chord_mask
+            )
             loss = loss_fn(melody_embeds, chord_embeds)
 
             loss.backward()
@@ -189,7 +200,16 @@ def main(config):
                 melody_tokens = batch['melody_tokens'].to(device)
                 chord_tokens = batch['chord_tokens'].to(device)
                 
-                melody_embeds, chord_embeds = model(melody_tokens, chord_tokens)
+                # Create padding masks
+                melody_mask = (melody_tokens == pad_token_id)
+                chord_mask = (chord_tokens == pad_token_id)
+                
+                melody_embeds, chord_embeds = model(
+                    melody_tokens, 
+                    chord_tokens,
+                    melody_padding_mask=melody_mask,
+                    chord_padding_mask=chord_mask
+                )
                 loss = loss_fn(melody_embeds, chord_embeds)
                 
                 total_valid_loss += loss.item()

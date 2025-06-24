@@ -232,7 +232,13 @@ class OfflineTeacherModel(nn.Module):
         mask = torch.triu(torch.ones(seq_length, seq_length, device=device), diagonal=1)
         return mask.masked_fill(mask == 1, float('-inf'))
     
-    def forward(self, melody_tokens: torch.Tensor, chord_tokens: torch.Tensor, melody_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        melody_tokens: torch.Tensor,
+        chord_tokens: torch.Tensor,
+        melody_mask: Optional[torch.Tensor] = None,
+        chord_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Forward pass for the teacher model.
         
@@ -240,6 +246,7 @@ class OfflineTeacherModel(nn.Module):
             melody_tokens: [batch, melody_seq]
             chord_tokens: [batch, chord_seq]
             melody_mask: [batch, melody_seq] - Padding mask for melody
+            chord_mask: [batch, chord_seq] - Padding mask for chords
         
         Returns:
             logits: [batch, chord_seq, chord_vocab_size]
@@ -248,18 +255,19 @@ class OfflineTeacherModel(nn.Module):
         melody_embed = self.embeddings.encode_melody(melody_tokens)
         chord_embed = self.embeddings.encode_chords(chord_tokens)
         
-        # 2. Create masks
-        causal_mask = self.create_causal_mask(chord_tokens.size(1), chord_tokens.device)
+        # 2. Create causal mask for decoder
+        causal_mask = self.create_causal_mask(chord_tokens.size(1), device=chord_tokens.device)
         
-        # 3. Transformer forward pass
+        # 3. Pass through transformer
         output = self.transformer(
             src=melody_embed,
             tgt=chord_embed,
             tgt_mask=causal_mask,
-            src_key_padding_mask=melody_mask
+            src_key_padding_mask=melody_mask,
+            tgt_key_padding_mask=chord_mask,
         )
         
-        # 4. Output projection
+        # 4. Project to vocabulary
         logits = self.output_head(output)
         
         return logits

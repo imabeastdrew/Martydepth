@@ -89,6 +89,7 @@ def main(config):
     )
     
     config['vocab_size'] = tokenizer_info['total_vocab_size']
+    pad_token_id = tokenizer_info.get('pad_token_id', -100)
     
     # --- Model ---
     model = DiscriminativeRewardModel(
@@ -136,6 +137,9 @@ def main(config):
             # Shape: (2 * batch_size, seq_len)
             combined_sequences = torch.cat([real_sequences, fake_sequences], dim=0)
 
+            # Generate padding mask for the combined batch
+            padding_mask = (combined_sequences == pad_token_id)
+            
             # Create labels: 1 for real, 0 for fake
             real_labels = torch.ones(real_sequences.size(0), 1, device=device)
             fake_labels = torch.zeros(fake_sequences.size(0), 1, device=device)
@@ -143,13 +147,11 @@ def main(config):
             
             optimizer.zero_grad()
             
-            # Generate padding mask for the combined batch
-            # Assuming padding token index is available in tokenizer_info
-            pad_token_idx = tokenizer_info.get('pad_token_idx', 0)
-            padding_mask = (combined_sequences != pad_token_idx).to(device)
-            
             predictions = model(combined_sequences, padding_mask=padding_mask)
             
+            # Apply sigmoid since the model outputs logits and BCEWithLogitsLoss is not used
+            predictions = torch.sigmoid(predictions)
+
             loss = loss_fn(predictions, combined_labels)
             loss.backward()
             optimizer.step()
@@ -175,15 +177,14 @@ def main(config):
                 fake_sequences = batch['fake_sequences'].to(device)
                 
                 combined_sequences = torch.cat([real_sequences, fake_sequences], dim=0)
-                
+                padding_mask = (combined_sequences == pad_token_id)
+
                 real_labels = torch.ones(real_sequences.size(0), 1, device=device)
                 fake_labels = torch.zeros(fake_sequences.size(0), 1, device=device)
                 combined_labels = torch.cat([real_labels, fake_labels], dim=0)
                 
-                pad_token_idx = tokenizer_info.get('pad_token_idx', 0)
-                padding_mask = (combined_sequences != pad_token_idx).to(device)
-                
                 predictions = model(combined_sequences, padding_mask=padding_mask)
+                predictions = torch.sigmoid(predictions)
                 loss = loss_fn(predictions, combined_labels)
                 total_valid_loss += loss.item()
 

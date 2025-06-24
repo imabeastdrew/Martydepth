@@ -59,6 +59,7 @@ def main(config: dict):
     
     config['melody_vocab_size'] = tokenizer_info['melody_vocab_size']
     config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
+    pad_token_id = tokenizer_info.get('pad_token_id', -100)
     
     # --- Model, Optimizer, Scheduler ---
     model = OfflineTeacherModel(
@@ -114,14 +115,21 @@ def main(config: dict):
         for batch in pbar:
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
+            # Create masks
+            melody_mask = (batch['melody_tokens'] == pad_token_id)
+            chord_mask = (batch['chord_input'] == pad_token_id)
+            
             logits = model(
                 melody_tokens=batch['melody_tokens'],
-                chord_tokens=batch['chord_input']
+                chord_tokens=batch['chord_input'],
+                melody_mask=melody_mask,
+                chord_mask=chord_mask
             )
             
             loss = nn.functional.cross_entropy(
                 logits.reshape(-1, config['chord_vocab_size']),
-                batch['chord_target'].reshape(-1)
+                batch['chord_target'].reshape(-1),
+                ignore_index=pad_token_id
             )
             
             optimizer.zero_grad()
@@ -146,14 +154,21 @@ def main(config: dict):
             for batch in val_loader:
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
+                # Create masks
+                melody_mask = (batch['melody_tokens'] == pad_token_id)
+                chord_mask = (batch['chord_input'] == pad_token_id)
+
                 logits = model(
                     melody_tokens=batch['melody_tokens'],
-                    chord_tokens=batch['chord_input']
+                    chord_tokens=batch['chord_input'],
+                    melody_mask=melody_mask,
+                    chord_mask=chord_mask
                 )
                 
                 loss = nn.functional.cross_entropy(
                     logits.reshape(-1, config['chord_vocab_size']),
-                    batch['chord_target'].reshape(-1)
+                    batch['chord_target'].reshape(-1),
+                    ignore_index=pad_token_id
                 )
                 total_val_loss += loss.item()
         
