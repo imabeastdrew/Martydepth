@@ -11,6 +11,7 @@ import wandb
 import yaml
 import json
 from transformers import Adafactor
+from torch.optim.lr_scheduler import LambdaLR
 
 from src.models.online_transformer import OnlineTransformer
 from src.data.dataset import create_dataloader
@@ -76,8 +77,14 @@ def main(config: dict):
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('pad_token_id', -100))
     optimizer = Adafactor(
         model.parameters(), 
-        scale_parameter=True, 
-        relative_step=True
+        lr=config['learning_rate'], 
+        scale_parameter=False, 
+        relative_step=False
+    )
+    total_steps = len(train_loader) * config['max_epochs']
+    scheduler = get_warmup_schedule(
+        optimizer,
+        num_warmup_steps=config['warmup_steps']
     )
 
     # --- Smoke Test ---
@@ -114,11 +121,13 @@ def main(config: dict):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_val'])
             optimizer.step()
-            
+            scheduler.step()
+
+            lr = optimizer.param_groups[0]['lr']
             total_train_loss += loss.item()
             global_step += 1
-            pbar.set_postfix({'loss': loss.item()})
-            wandb.log({'train/step_loss': loss.item()}, step=global_step)
+            pbar.set_postfix({'loss': loss.item(), 'lr': lr})
+            wandb.log({'train/step_loss': loss.item(), 'train/learning_rate': lr}, step=global_step)
 
         avg_train_loss = total_train_loss / len(train_loader)
         
@@ -151,7 +160,7 @@ def main(config: dict):
                 
                 total_valid_loss += loss.item()
                 pbar_valid.set_postfix({'loss': loss.item()})
-                
+        
         # Avoid division by zero if all batches were NaN
         num_valid_batches = len(valid_loader) - nan_batches
         avg_valid_loss = total_valid_loss / num_valid_batches if num_valid_batches > 0 else float('nan')
