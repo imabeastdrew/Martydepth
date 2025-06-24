@@ -19,7 +19,7 @@ class Encoder(nn.Module):
                  max_seq_length: int = 512):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
-        self.position_embedding = nn.Embedding(max_seq_length, embed_dim)
+        self.position_embedding = nn.Embedding(max_seq_length + 1, embed_dim)
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,

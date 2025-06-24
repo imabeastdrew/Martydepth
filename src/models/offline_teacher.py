@@ -7,8 +7,9 @@ from typing import Optional
 class OfflineTeacherEmbeddings(nn.Module):
     """Separate embeddings for encoder (melody) and decoder (chords)"""
     
-    def __init__(self, melody_vocab_size, chord_vocab_size, embed_dim, max_seq_length):
+    def __init__(self, melody_vocab_size, chord_vocab_size, embed_dim, max_seq_length, pad_token_id: int):
         super().__init__()
+        self.pad_token_id = pad_token_id
         
         # Token embeddings (512-dim)
         self.melody_embedding = nn.Embedding(melody_vocab_size, embed_dim)
@@ -32,8 +33,14 @@ class OfflineTeacherEmbeddings(nn.Module):
         """Embed melody tokens for encoder"""
         batch_size, seq_length = melody_tokens.shape
         
+        # Replace pad tokens with a valid index (0) and then zero out their embeddings
+        padding_mask = (melody_tokens == self.pad_token_id)
+        safe_tokens = melody_tokens.clone()
+        safe_tokens[padding_mask] = 0
+        
         # Token embeddings
-        token_embeds = self.melody_embedding(melody_tokens)
+        token_embeds = self.melody_embedding(safe_tokens)
+        token_embeds[padding_mask] = 0.0
         
         # Positional embeddings
         positions = torch.arange(seq_length, device=melody_tokens.device)
@@ -45,8 +52,14 @@ class OfflineTeacherEmbeddings(nn.Module):
         """Embed chord tokens for decoder"""
         batch_size, seq_length = chord_tokens.shape
         
+        # Replace pad tokens with a valid index (0) and then zero out their embeddings
+        padding_mask = (chord_tokens == self.pad_token_id)
+        safe_tokens = chord_tokens.clone()
+        safe_tokens[padding_mask] = 0
+
         # Token embeddings
-        token_embeds = self.chord_embedding(chord_tokens)
+        token_embeds = self.chord_embedding(safe_tokens)
+        token_embeds[padding_mask] = 0.0
         
         # Positional embeddings
         positions = torch.arange(seq_length, device=chord_tokens.device)
@@ -186,7 +199,8 @@ class OfflineTeacherModel(nn.Module):
                  num_heads: int = 8,
                  num_layers: int = 4,
                  dropout: float = 0.1,
-                 max_seq_length: int = 256):
+                 max_seq_length: int = 256,
+                 pad_token_id: int = -100):
         super().__init__()
         
         # Store configuration
@@ -196,7 +210,7 @@ class OfflineTeacherModel(nn.Module):
         
         # Embeddings
         self.embeddings = OfflineTeacherEmbeddings(
-            melody_vocab_size, chord_vocab_size, embed_dim, max_seq_length
+            melody_vocab_size, chord_vocab_size, embed_dim, max_seq_length, pad_token_id
         )
         
         # Full Transformer using PyTorch's implementation

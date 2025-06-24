@@ -130,8 +130,9 @@ def main(config):
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Training]")
         for batch in pbar:
-            real_sequences = batch['real_sequences'].to(device)
-            fake_sequences = batch['fake_sequences'].to(device)
+            real_sequences = batch['interleaved_tokens'].to(device)
+            # Create negative samples by shuffling chords within the batch
+            fake_sequences = create_negative_samples(real_sequences)
             
             # Combine real and fake sequences for a single batch
             # Shape: (2 * batch_size, seq_len)
@@ -173,9 +174,10 @@ def main(config):
         with torch.no_grad():
             pbar_valid = tqdm(valid_loader, desc="Validating")
             for batch in pbar_valid:
-                real_sequences = batch['real_sequences'].to(device)
-                fake_sequences = batch['fake_sequences'].to(device)
-                
+                real_sequences = batch['interleaved_tokens'].to(device)
+                # Create negative samples for validation
+                fake_sequences = create_negative_samples(real_sequences)
+
                 combined_sequences = torch.cat([real_sequences, fake_sequences], dim=0)
                 padding_mask = (combined_sequences == pad_token_id)
 

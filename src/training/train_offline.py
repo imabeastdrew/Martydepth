@@ -69,7 +69,8 @@ def main(config: dict):
         num_heads=config['num_heads'],
         num_layers=config['num_layers'],
         dropout=config['dropout'],
-        max_seq_length=config['max_sequence_length']
+        max_seq_length=config['max_sequence_length'],
+        pad_token_id=pad_token_id
     ).to(device)
 
     optimizer = Adafactor(
