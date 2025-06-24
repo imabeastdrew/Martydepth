@@ -45,7 +45,8 @@ class OnlineTransformer(nn.Module):
             nhead=num_heads,
             dim_feedforward=4 * embed_dim,  # 2048 for embed_dim=512
             dropout=dropout,
-            batch_first=True
+            batch_first=True,
+            norm_first=True  # Use Pre-LN for stability
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         

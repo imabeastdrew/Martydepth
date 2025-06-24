@@ -221,8 +221,9 @@ class OfflineTeacherModel(nn.Module):
             num_decoder_layers=num_layers,
             dim_feedforward=4 * embed_dim,
             dropout=dropout,
-                batch_first=True
-            )
+            batch_first=True,
+            norm_first=True  # Use Pre-LN for stability
+        )
         
         # Output projection to chord vocabulary
         self.output_head = nn.Linear(embed_dim, chord_vocab_size)
