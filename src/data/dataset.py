@@ -30,13 +30,13 @@ class FrameDataset(Dataset):
             data_dir: Path to the data directory containing train/valid/test splits
             split: Which split to load ('train', 'valid', or 'test')
             sequence_length: Length of each sequence
-            mode: 'online' for causal training, 'offline' for full context, or 'contrastive' for reward model training.
+            mode: 'online', 'offline', 'contrastive', or 'discriminator'.
         """
         self.data_dir = Path(data_dir)
         self.split = split
         self.sequence_length = sequence_length
-        if mode not in ['online', 'offline', 'contrastive']:
-            raise ValueError(f"Invalid mode: {mode}. Must be one of 'online', 'offline', 'contrastive'.")
+        if mode not in ['online', 'offline', 'contrastive', 'discriminator']:
+            raise ValueError(f"Invalid mode: {mode}. Must be one of 'online', 'offline', 'contrastive', 'discriminator'.")
         self.mode = mode
         
         # Point to the directory for the correct split
@@ -53,6 +53,7 @@ class FrameDataset(Dataset):
 
         # Load tokenizer info
         self.tokenizer_info = self._load_tokenizer_info()
+        self.pad_token_id = self.tokenizer_info['pad_token_id']
         
         # Set vocabulary sizes
         self.melody_vocab_size = self.tokenizer_info['melody_vocab_size']
@@ -99,7 +100,7 @@ class FrameDataset(Dataset):
         target_tokens = torch.tensor(full_interleaved[1:], dtype=torch.long)
 
         # Create padding mask: True for padding tokens, False otherwise
-        padding_mask = (input_tokens == PAD_MELODY) | (input_tokens == PAD_CHORD)
+        padding_mask = (input_tokens == self.pad_token_id)
         
         return {
             'input_tokens': input_tokens,
@@ -115,11 +116,16 @@ class FrameDataset(Dataset):
         melody_tokens = torch.tensor(sequence.melody_tokens, dtype=torch.long)
         chord_tokens = torch.tensor(sequence.chord_tokens, dtype=torch.long)
         
+        # The chord sequence is shifted by one position for teacher forcing.
+        # The model receives the full melody, the chord sequence up to the
+        # second-to-last token, and predicts the chord sequence from the
+        # second token onwards.
+        chord_input = torch.cat([torch.tensor([self.tokenizer_info['chord_token_start']]), chord_tokens[:-1]])
+
         return {
             'melody_tokens': melody_tokens,           # [T] - full melody sequence
-            'chord_tokens': chord_tokens,             # [T] - full ground truth chord sequence
-            'chord_input': chord_tokens[:-1],         # [T-1] - causal chord input
-            'chord_target': chord_tokens[1:],         # [T-1] - next chord targets
+            'chord_input': chord_input,               # [T] - shifted chord sequence for decoder input
+            'chord_target': chord_tokens,             # [T] - original chord sequence for target
             'song_id': sequence.song_id,
             'start_frame': sequence.start_frame
         }
@@ -133,6 +139,17 @@ class FrameDataset(Dataset):
         return {
             'melody_tokens': melody_tokens,
             'chord_tokens': chord_tokens,
+            'song_id': sequence.song_id,
+        }
+
+    def _get_discriminator_format(self, sequence: FrameSequence) -> Dict[str, torch.Tensor]:
+        """Get format for training the discriminative reward model."""
+        interleaved_tokens = self._interleave_sequences(
+            sequence.melody_tokens,
+            sequence.chord_tokens
+        )
+        return {
+            'interleaved_tokens': torch.tensor(interleaved_tokens, dtype=torch.long),
             'song_id': sequence.song_id,
         }
 
@@ -154,8 +171,12 @@ class FrameDataset(Dataset):
             return self._get_online_format(sequence)
         elif self.mode == 'offline':
             return self._get_offline_format(sequence)
-        else:  # contrastive mode
+        elif self.mode == 'contrastive':
             return self._get_contrastive_format(sequence)
+        elif self.mode == 'discriminator':
+            return self._get_discriminator_format(sequence)
+        else:
+            raise ValueError(f"Unsupported mode: {self.mode}")
 
 def create_dataloader(data_dir: Path,
                      split: str = 'train',
@@ -174,7 +195,7 @@ def create_dataloader(data_dir: Path,
         shuffle: Whether to shuffle the sequences
         num_workers: Number of worker processes for loading
         sequence_length: Length of each sequence
-        mode: 'online' for causal training, 'offline' for full context, or 'contrastive' for reward model training.
+        mode: 'online', 'offline', 'contrastive', or 'discriminator' for reward model training.
         
     Returns:
         A tuple containing the DataLoader and the tokenizer_info dictionary.
@@ -212,7 +233,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Test all modes
-    for mode in ['online', 'offline', 'contrastive']:
+    for mode in ['online', 'offline', 'contrastive', 'discriminator']:
         print(f"\nTesting {mode} mode...")
         dataloader, tokenizer_info = create_dataloader(
             data_dir=data_dir,
@@ -245,12 +266,13 @@ def main():
             print(f"Target tokens shape: {batch['target_tokens'].shape}")
         elif mode == 'offline':  # offline mode
             print(f"Melody tokens shape: {batch['melody_tokens'].shape}")
-            print(f"Chord tokens shape: {batch['chord_tokens'].shape}")
             print(f"Chord input shape: {batch['chord_input'].shape}")
             print(f"Chord target shape: {batch['chord_target'].shape}")
-        else: # contrastive
+        elif mode == 'contrastive':
             print(f"Melody tokens shape: {batch['melody_tokens'].shape}")
             print(f"Chord tokens shape: {batch['chord_tokens'].shape}")
+        else: # discriminator
+            print(f"Interleaved tokens shape: {batch['interleaved_tokens'].shape}")
 
         print(f"Device: {next(iter(batch.values())).device if isinstance(next(iter(batch.values())), torch.Tensor) else 'cpu'}")
 
