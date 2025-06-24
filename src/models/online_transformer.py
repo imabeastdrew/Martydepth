@@ -56,11 +56,11 @@ class OnlineTransformer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
     def create_causal_mask(self, seq_length: int) -> torch.Tensor:
-        """Create causal mask to prevent attending to future tokens"""
-        # Create upper triangular mask (1s above diagonal)
-        mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1)
-        # Invert mask (1s become 0s and vice versa) and convert to float
-        return mask.masked_fill(mask == 1, float('-inf'))
+        """Create causal mask to prevent attending to future tokens.
+        
+        Returns a boolean tensor where True indicates a position to be masked.
+        """
+        return torch.triu(torch.ones(seq_length, seq_length, dtype=torch.bool), diagonal=1)
         
     def forward(self, tokens: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
