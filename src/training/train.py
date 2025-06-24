@@ -134,19 +134,36 @@ def main(config: dict):
         # --- Validation Loop ---
         model.eval()
         total_valid_loss = 0
+        nan_batches = 0
         with torch.no_grad():
             pbar_valid = tqdm(valid_loader, desc="Validating")
-            for batch in pbar_valid:
+            for i, batch in enumerate(pbar_valid):
                 input_tokens = batch['input_tokens'].to(device)
                 target_tokens = batch['target_tokens'].to(device)
                 padding_mask = batch['padding_mask'].to(device)
                 
                 logits = model(input_tokens, padding_mask=padding_mask)
+                
+                # Check for NaN in logits before loss calculation
+                if torch.isnan(logits).any():
+                    print(f"\nNaN detected in model logits at validation batch {i}. Skipping loss calculation.")
+                    nan_batches += 1
+                    continue
+
                 loss = loss_fn(logits.view(-1, config['vocab_size']), target_tokens.view(-1))
+
+                # Check for NaN in the final loss
+                if torch.isnan(loss):
+                    print(f"\nNaN loss detected at validation batch {i}. Logits min/max: {logits.min()}, {logits.max()}.")
+                    nan_batches += 1
+                    continue
+                
                 total_valid_loss += loss.item()
                 pbar_valid.set_postfix({'loss': loss.item()})
 
-        avg_valid_loss = total_valid_loss / len(valid_loader)
+        # Avoid division by zero if all batches were NaN
+        num_valid_batches = len(valid_loader) - nan_batches
+        avg_valid_loss = total_valid_loss / num_valid_batches if num_valid_batches > 0 else float('nan')
         
         print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_valid_loss:.4f}")
         wandb.log({
