@@ -275,10 +275,20 @@ class OfflineTeacherModel(nn.Module):
         melody_embed = self.embeddings.encode_melody(melody_tokens)
         chord_embed = self.embeddings.encode_chords(chord_tokens)
         
-        # 2. Create causal mask for decoder
+        # 2. Create causal mask for decoder and convert to float
         causal_mask = self.create_causal_mask(chord_tokens.size(1), device=chord_tokens.device)
+        causal_mask = causal_mask.to(dtype=torch.float32)  # Convert to float
         
-        # 3. Pass through transformer
+        # 3. Convert padding masks to float and invert (1 = keep, 0 = mask)
+        if melody_mask is not None:
+            melody_mask = melody_mask.to(dtype=torch.float32)
+            melody_mask = melody_mask * -1e9  # Convert True to -inf for masking
+        
+        if chord_mask is not None:
+            chord_mask = chord_mask.to(dtype=torch.float32)
+            chord_mask = chord_mask * -1e9  # Convert True to -inf for masking
+        
+        # 4. Pass through transformer
         output = self.transformer(
             src=melody_embed,
             tgt=chord_embed,
@@ -287,7 +297,7 @@ class OfflineTeacherModel(nn.Module):
             tgt_key_padding_mask=chord_mask,
         )
         
-        # 4. Project to vocabulary
+        # 5. Project to vocabulary
         logits = self.output_head(output)
         
         return logits
