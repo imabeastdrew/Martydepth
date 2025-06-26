@@ -37,15 +37,10 @@ ENV/
 .ipynb_checkpoints
 
 # Data
-# Allow wandb API key and data
-!wandb_api_key.txt
-# Allow tokenizer info files
-!data/interim/*/tokenizer_info.json
-# Ignore large pickle files
-data/interim/*/*.pkl
 data/raw/
 data/processed/
 data/external/
+data/interim/*/*.npz
 data/interim/*/*.npz
 
 # Logs and databases
