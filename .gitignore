@@ -46,6 +46,7 @@ data/interim/*/*.pkl
 data/raw/
 data/processed/
 data/external/
+data/interim/*/*.npz
 
 # Logs and databases
 *.log
