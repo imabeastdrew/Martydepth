@@ -2,14 +2,14 @@
 
 # --- Data settings ---
 data_dir: data/interim
-batch_size: 256
-num_workers: 8
+batch_size: 64
+num_workers: 2
 
 # --- Model architecture (Paper Spec: 8 layers total) ---
 embed_dim: 512
 num_layers: 4  # 4 encoder + 4 decoder = 8 total layers
 num_heads: 8
-max_sequence_length: 512
+max_sequence_length: 256
 dropout: 0.1
 
 # --- Training loop (Paper Spec) ---
