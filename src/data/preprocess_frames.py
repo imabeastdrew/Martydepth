@@ -6,7 +6,7 @@ Frame-based Preprocessing: Convert raw chord data into frame sequences
 import json
 import pickle
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import numpy as np
 from dataclasses import dataclass
 from collections import defaultdict
@@ -17,19 +17,103 @@ from src.config.tokenization_config import (
     CHORD_TOKEN_START,
     CHORD_SILENCE_TOKEN,
     CHORD_ONSET_HOLD_START,
-    MIDI_ONSET_START,
-    MIDI_HOLD_START,
+    MELODY_ONSET_HOLD_START,
+    MIN_MIDI_NOTE,
     MAX_MIDI_NOTE,
+    UNIQUE_MIDI_NOTES,
     MELODY_VOCAB_SIZE,
     PAD_TOKEN,
+    midi_to_onset_hold_tokens,
+    token_to_midi_and_type,
 )
 from src.data.datastructures import FrameSequence
 
-# Token ID ranges
-MELODY_TOKEN_START = 0
-CHORD_TOKEN_START = 257
-SILENCE_TOKEN = 0
-CHORD_SILENCE_TOKEN = CHORD_TOKEN_START
+def validate_sequence(sequence: FrameSequence) -> Dict[str, Any]:
+    """Validate processed sequence for common issues"""
+    validation_results = {
+        "valid": True,
+        "issues": [],
+        "stats": {}
+    }
+    
+    melody_tokens = sequence.melody_tokens
+    chord_tokens = sequence.chord_tokens
+    
+    # Remove padding for analysis
+    non_pad_mask = melody_tokens != PAD_TOKEN
+    melody_content = melody_tokens[non_pad_mask]
+    chord_content = chord_tokens[non_pad_mask]
+    
+    # Check for completely silent sequences
+    if len(melody_content) > 0:
+        melody_silence_ratio = np.sum(melody_content == SILENCE_TOKEN) / len(melody_content)
+        chord_silence_ratio = np.sum(chord_content == CHORD_SILENCE_TOKEN) / len(chord_content)
+        
+        # Flag sequences that are completely silent
+        if melody_silence_ratio >= 1.0 and chord_silence_ratio >= 1.0:
+            validation_results["valid"] = False
+            validation_results["issues"].append("Completely silent sequence (100% melody + chord silence)")
+        
+        # Flag sequences with 100% melody silence (even if chords exist)
+        elif melody_silence_ratio >= 1.0:
+            validation_results["valid"] = False
+            validation_results["issues"].append("Melody-only silent sequence (100% melody silence)")
+        
+        # Flag sequences with 100% chord silence (even if melody exists)  
+        elif chord_silence_ratio >= 1.0:
+            validation_results["valid"] = False
+            validation_results["issues"].append("Chord-only silent sequence (100% chord silence)")
+        
+        # Flag sequences with very limited content
+        if len(melody_content) < 10:
+            validation_results["valid"] = False
+            validation_results["issues"].append(f"Very short content length: {len(melody_content)}")
+            
+        # Check for musical content
+        unique_melody = len(np.unique(melody_content[melody_content != SILENCE_TOKEN]))
+        unique_chords = len(np.unique(chord_content[chord_content != CHORD_SILENCE_TOKEN]))
+        
+        if unique_melody == 0 and unique_chords == 0:
+            validation_results["valid"] = False
+            validation_results["issues"].append("No musical content (all silence tokens)")
+    else:
+        validation_results["valid"] = False
+        validation_results["issues"].append("Empty sequence after padding removal")
+    
+    # Check melody token ranges (interleaved)
+    invalid_melody = melody_tokens[
+        (melody_tokens < 0) | 
+        ((melody_tokens != SILENCE_TOKEN) & (melody_tokens != PAD_TOKEN) & 
+         ((melody_tokens < MELODY_ONSET_HOLD_START) | (melody_tokens >= PAD_TOKEN)))
+    ]
+    if len(invalid_melody) > 0:
+        validation_results["valid"] = False
+        validation_results["issues"].append(f"Invalid melody tokens: {np.unique(invalid_melody)}")
+    
+    # Check chord token ranges  
+    invalid_chords = chord_tokens[(chord_tokens < CHORD_TOKEN_START) & (chord_tokens != PAD_TOKEN)]
+    if len(invalid_chords) > 0:
+        validation_results["valid"] = False
+        validation_results["issues"].append(f"Invalid chord tokens: {np.unique(invalid_chords)}")
+    
+    # Check for PAD tokens in chord sequences (should use CHORD_SILENCE_TOKEN instead)
+    pad_in_chords = np.sum(chord_tokens == PAD_TOKEN)
+    if pad_in_chords > 0:
+        validation_results["valid"] = False
+        validation_results["issues"].append(f"PAD tokens found in chord sequence: {pad_in_chords}")
+    
+    # Calculate statistics
+    content_length = np.sum(non_pad_mask)
+    
+    validation_results["stats"] = {
+        "content_length": int(content_length),
+        "padding_length": int(256 - content_length),
+        "padding_ratio": float(1 - content_length / 256),
+        "melody_silence_ratio": float(np.sum(melody_content == SILENCE_TOKEN) / len(melody_content)) if len(melody_content) > 0 else 1.0,
+        "chord_silence_ratio": float(np.sum(chord_content == CHORD_SILENCE_TOKEN) / len(chord_content)) if len(chord_content) > 0 else 1.0,
+    }
+    
+    return validation_results
 
 class ChordTokenizer:
     def __init__(self):
@@ -74,32 +158,36 @@ class ChordTokenizer:
 class MIDITokenizer:
     def __init__(self):
         self.silence_token = SILENCE_TOKEN
-        self.midi_onset_start = MIDI_ONSET_START
-        self.midi_hold_start = MIDI_HOLD_START
+        self.min_midi_note = MIN_MIDI_NOTE
         self.max_midi_note = MAX_MIDI_NOTE
-        self.note_to_token = {(-1, -1): (self.silence_token, self.silence_token)}
-        self.token_to_note = {self.silence_token: (-1, -1, False)}
-        for midi_num in range(self.max_midi_note + 1):
-            onset_token = self.midi_onset_start + midi_num
-            hold_token = self.midi_hold_start + midi_num
+        
+        # Build token mappings using interleaved approach
+        self.note_to_token = {}
+        self.token_to_note = {self.silence_token: (-1, False)}
+        
+        for midi_num in range(self.min_midi_note, self.max_midi_note + 1):
+            onset_token, hold_token = midi_to_onset_hold_tokens(midi_num)
+            
             self.note_to_token[midi_num] = (onset_token, hold_token)
-            self.token_to_note[onset_token] = (midi_num, -1, True)
-            self.token_to_note[hold_token] = (midi_num, -1, False)
+            self.token_to_note[onset_token] = (midi_num, True)
+            self.token_to_note[hold_token] = (midi_num, False)
 
     def encode_midi_note(self, midi_number: int) -> Tuple[int, int]:
-        if not (0 <= midi_number <= self.max_midi_note):
+        """Encode MIDI note to onset/hold token pair"""
+        if not (self.min_midi_note <= midi_number <= self.max_midi_note):
             return self.silence_token, self.silence_token
-        onset_token = self.midi_onset_start + midi_number
-        hold_token = self.midi_hold_start + midi_number
-        return onset_token, hold_token
+        
+        return self.note_to_token[midi_number]
 
     def decode_note(self, token: int) -> Tuple[int, int, bool]:
+        """Decode token to (midi_number, unused, is_onset)"""
         if token == self.silence_token:
             return -1, -1, False
         if token not in self.token_to_note:
             raise ValueError(f"Unknown token ID: {token}")
-        midi_num, unused, is_onset = self.token_to_note[token]
-        return midi_num, unused, is_onset
+        
+        midi_num, is_onset = self.token_to_note[token]
+        return midi_num, -1, is_onset
 
     @property
     def next_token_id(self):
@@ -173,16 +261,23 @@ class FramePreprocessor:
             if len(melody_seq) < self.sequence_length:
                 pad_len = self.sequence_length - len(melody_seq)
                 melody_seq.extend([PAD_TOKEN] * pad_len)
-                chord_seq.extend([PAD_TOKEN] * pad_len)
+                chord_seq.extend([CHORD_SILENCE_TOKEN] * pad_len)
             
-            sequences.append(FrameSequence(
+            sequence = FrameSequence(
                 melody_tokens=np.array(melody_seq),
                 chord_tokens=np.array(chord_seq),
                 frame_times=np.zeros(self.sequence_length),
                 frame_durations=np.zeros(self.sequence_length),
                 song_id=song_id,
                 start_frame=start_idx
-            ))
+            )
+            
+            # Validate sequence before adding
+            validation = validate_sequence(sequence)
+            if validation["valid"]:
+                sequences.append(sequence)
+            else:
+                print(f"Filtered sequence {song_id}:{start_idx} - {', '.join(validation['issues'])}")
         
         return sequences
 
@@ -196,13 +291,16 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
             pickle.dump(seq, f)
 
     tokenizer_info = {
-        "melody_vocab_size": melody_tokenizer.next_token_id,
-        "chord_vocab_size": chord_tokenizer.next_token_id,
+        "melody_vocab_size": MELODY_VOCAB_SIZE,
+        "chord_vocab_size": chord_tokenizer.next_token_id - CHORD_TOKEN_START,
         "total_vocab_size": chord_tokenizer.next_token_id,
+        "pad_token_id": PAD_TOKEN,
         "chord_token_start": CHORD_TOKEN_START,
+        "chord_silence_token": CHORD_SILENCE_TOKEN,
+        "midi_range": {"min": MIN_MIDI_NOTE, "max": MAX_MIDI_NOTE},
+        "unique_midi_notes": UNIQUE_MIDI_NOTES,
         "token_to_chord": chord_tokenizer.token_to_chord,
         "token_to_note": melody_tokenizer.token_to_note,
-        "pad_token_id": PAD_TOKEN,
     }
 
     with open(output_dir / 'tokenizer_info.json', 'w') as f:

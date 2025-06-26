@@ -16,11 +16,11 @@ class DiscriminativeRewardModel(nn.Module):
     """
     def __init__(self,
                  vocab_size: int,
-                 embed_dim: int = 512,
-                 num_heads: int = 8,
-                 num_layers: int = 6,
-                 dropout: float = 0.1,
-                 max_seq_length: int = 512):
+                 embed_dim: int,
+                 num_heads: int,
+                 num_layers: int,
+                 dropout: float,
+                 max_seq_length: int):
         super().__init__()
         
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)

@@ -17,6 +17,7 @@ from src.models.online_transformer import OnlineTransformer
 from src.data.dataset import create_dataloader
 from src.training.utils.schedulers import get_warmup_schedule
 from src.training.utils.logging import log_model_artifact
+from src.config.tokenization_config import PAD_TOKEN
 
 def main(config: dict):
     """Main training function."""
@@ -46,7 +47,8 @@ def main(config: dict):
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
         sequence_length=config['max_sequence_length'],
-        mode='online'
+        mode='online',
+        shuffle=True
     )
     valid_loader, _ = create_dataloader(
         data_dir=data_path,
@@ -54,7 +56,8 @@ def main(config: dict):
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
         sequence_length=config['max_sequence_length'],
-        mode='online'
+        mode='online',
+        shuffle=False
     )
     
     config['vocab_size'] = tokenizer_info['total_vocab_size']
@@ -67,14 +70,14 @@ def main(config: dict):
         num_layers=config['num_layers'],
         dropout=config['dropout'],
         max_seq_length=config['max_sequence_length'],
-        pad_token_id=tokenizer_info.get('pad_token_id', -100)
+        pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
     ).to(device)
     
     wandb.watch(model, log='all')
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
 
     # --- Training Components ---
-    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('pad_token_id', -100))
+    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('pad_token_id', PAD_TOKEN))
     optimizer = Adafactor(
         model.parameters(), 
         lr=config['learning_rate'], 

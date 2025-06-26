@@ -12,12 +12,12 @@ class Encoder(nn.Module):
     """A transformer encoder module with embedding."""
     def __init__(self,
                  vocab_size: int,
-                 embed_dim: int = 512,
-                 num_heads: int = 8,
-                 num_layers: int = 6,
-                 dropout: float = 0.1,
-                 max_seq_length: int = 512,
-                 pad_token_id: int = -100):
+                 embed_dim: int,
+                 num_heads: int,
+                 num_layers: int,
+                 dropout: float,
+                 max_seq_length: int,
+                 pad_token_id: int):
         super().__init__()
         self.pad_token_id = pad_token_id
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
@@ -85,12 +85,12 @@ class ContrastiveRewardModel(nn.Module):
     def __init__(self,
                  melody_vocab_size: int,
                  chord_vocab_size: int,
-                 embed_dim: int = 512,
-                 num_heads: int = 8,
-                 num_layers: int = 6,
-                 dropout: float = 0.1,
-                 max_seq_length: int = 512,
-                 pad_token_id: int = -100):
+                 embed_dim: int,
+                 num_heads: int,
+                 num_layers: int,
+                 dropout: float,
+                 max_seq_length: int,
+                 pad_token_id: int):
         super().__init__()
         
         self.melody_encoder = Encoder(

@@ -18,6 +18,7 @@ import yaml
 
 from src.data.dataset import create_dataloader
 from src.models.contrastive_reward_model import ContrastiveRewardModel
+from src.config.tokenization_config import PAD_TOKEN
 
 class InfoNCELoss(nn.Module):
     """
@@ -101,8 +102,6 @@ def main(config):
         shuffle=False
     )
     
-    # Model
-    pad_token_id = tokenizer_info.get('pad_token_id', -100)
 
     model = ContrastiveRewardModel(
         melody_vocab_size=tokenizer_info['melody_vocab_size'],
@@ -112,7 +111,7 @@ def main(config):
         num_layers=config['num_layers'],
         dropout=config['dropout'],
         max_seq_length=config['max_seq_length'],
-        pad_token_id=pad_token_id
+        pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
     ).to(device)
     
     wandb.watch(model, log='all')
@@ -152,8 +151,8 @@ def main(config):
             chord_tokens = batch['chord_tokens'].to(device)
             
             # Create padding masks
-            melody_mask = (melody_tokens == pad_token_id)
-            chord_mask = (chord_tokens == pad_token_id)
+            melody_mask = (melody_tokens == model.pad_token_id)
+            chord_mask = (chord_tokens == model.pad_token_id)
 
             optimizer.zero_grad()
             
@@ -187,8 +186,8 @@ def main(config):
                 chord_tokens = batch['chord_tokens'].to(device)
                 
                 # Create padding masks
-                melody_mask = (melody_tokens == pad_token_id)
-                chord_mask = (chord_tokens == pad_token_id)
+                melody_mask = (melody_tokens == model.pad_token_id)
+                chord_mask = (chord_tokens == model.pad_token_id)
                 
                 melody_embeds, chord_embeds = model(
                     melody_tokens, 

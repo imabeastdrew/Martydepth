@@ -12,7 +12,10 @@ matplotlib
 scipy
 scikit-learn
 pandas
-seaborn
+seaborn>=0.11.0
 jupyterlab
 jsonargparse[signatures]
 pathlib
+umap-learn>=0.5.3
+plotly>=5.0.0
+scikit-learn>=1.0.0

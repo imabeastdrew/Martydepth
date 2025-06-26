@@ -195,12 +195,12 @@ class OfflineTeacherModel(nn.Module):
     def __init__(self,
                  melody_vocab_size: int,
                  chord_vocab_size: int,
-                 embed_dim: int = 512,
-                 num_heads: int = 8,
-                 num_layers: int = 4,
-                 dropout: float = 0.1,
-                 max_seq_length: int = 256,
-                 pad_token_id: int = -100):
+                 embed_dim: int,
+                 num_heads: int,
+                 num_layers: int,
+                 dropout: float,
+                 max_seq_length: int,
+                 pad_token_id: int):
         super().__init__()
         
         # Store configuration
@@ -307,7 +307,13 @@ def _test_model():
     # Initialize model
     model = OfflineTeacherModel(
         melody_vocab_size=melody_vocab,
-        chord_vocab_size=chord_vocab
+        chord_vocab_size=chord_vocab,
+        embed_dim=512,
+        num_heads=8,
+        num_layers=4,
+        dropout=0.1,
+        max_seq_length=256,
+        pad_token_id=177
     )
     
     # Forward pass

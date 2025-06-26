@@ -14,6 +14,7 @@ import yaml
 
 from src.data.dataset import create_dataloader
 from src.models.discriminative_reward_model import DiscriminativeRewardModel
+from src.config.tokenization_config import PAD_TOKEN
 
 def create_negative_samples(interleaved_tokens: torch.Tensor) -> torch.Tensor:
     """
@@ -89,7 +90,6 @@ def main(config):
     )
     
     config['vocab_size'] = tokenizer_info['total_vocab_size']
-    pad_token_id = tokenizer_info.get('pad_token_id', -100)
     
     # --- Model ---
     model = DiscriminativeRewardModel(
@@ -97,7 +97,9 @@ def main(config):
         embed_dim=config['embed_dim'],
         num_heads=config['num_heads'],
         num_layers=config['num_layers'],
-        dropout=config['dropout']
+        dropout=config['dropout'],
+        max_seq_length=config['max_seq_length'],
+        pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
     ).to(device)
     
     wandb.watch(model, log='all', log_freq=100)
@@ -139,7 +141,7 @@ def main(config):
             combined_sequences = torch.cat([real_sequences, fake_sequences], dim=0)
 
             # Generate padding mask for the combined batch
-            padding_mask = (combined_sequences == pad_token_id)
+            padding_mask = (combined_sequences == model.pad_token_id)
             
             # Create labels: 1 for real, 0 for fake
             real_labels = torch.ones(real_sequences.size(0), 1, device=device)
@@ -179,7 +181,7 @@ def main(config):
                 fake_sequences = create_negative_samples(real_sequences)
 
                 combined_sequences = torch.cat([real_sequences, fake_sequences], dim=0)
-                padding_mask = (combined_sequences == pad_token_id)
+                padding_mask = (combined_sequences == model.pad_token_id)
 
                 real_labels = torch.ones(real_sequences.size(0), 1, device=device)
                 fake_labels = torch.zeros(fake_sequences.size(0), 1, device=device)

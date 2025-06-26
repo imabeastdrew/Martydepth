@@ -13,7 +13,7 @@ import numpy as np
 from dataclasses import dataclass
 
 from src.data.datastructures import FrameSequence
-from src.config.tokenization_config import PAD_MELODY, PAD_CHORD
+from src.config.tokenization_config import PAD_TOKEN
 
 class FrameDataset(Dataset):
     """PyTorch Dataset for loading frame sequences"""
@@ -35,8 +35,6 @@ class FrameDataset(Dataset):
         self.data_dir = Path(data_dir)
         self.split = split
         self.sequence_length = sequence_length
-        if mode not in ['online', 'offline', 'contrastive', 'discriminator']:
-            raise ValueError(f"Invalid mode: {mode}. Must be one of 'online', 'offline', 'contrastive', 'discriminator'.")
         self.mode = mode
         
         # Point to the directory for the correct split
@@ -44,11 +42,6 @@ class FrameDataset(Dataset):
         
         # Discover all sequence files in the directory
         self.sequence_files = sorted(list(self.split_dir.glob("sequence_*.pkl")))
-        if not self.sequence_files:
-            raise FileNotFoundError(
-                f"No sequence .pkl files found in {self.split_dir}. "
-                f"Please run preprocessing to generate the data for the '{self.split}' split."
-            )
         self.num_sequences = len(self.sequence_files)
 
         # Load tokenizer info
@@ -63,12 +56,6 @@ class FrameDataset(Dataset):
     def _load_tokenizer_info(self) -> Dict:
         """Load tokenizer information"""
         tokenizer_file = self.split_dir / 'tokenizer_info.json'
-        if not tokenizer_file.exists():
-            raise FileNotFoundError(
-                f"Tokenizer info not found: {tokenizer_file}\n"
-                f"Please run preprocessing to generate tokenizer info first."
-            )
-        
         print(f"Loading tokenizer info from {tokenizer_file}")
         with open(tokenizer_file, 'r') as f:
             info = json.load(f)
@@ -80,7 +67,6 @@ class FrameDataset(Dataset):
         return self.num_sequences
     
     def _interleave_sequences(self, melody_tokens: np.ndarray, chord_tokens: np.ndarray) -> np.ndarray:
-        """Interleave melody and chord tokens in paper format: [chord_1, melody_1, chord_2, melody_2, ...]"""
         # Create interleaved sequence: [chord_0, melody_0, chord_1, melody_1, ...]
         interleaved = np.empty(len(melody_tokens) * 2, dtype=melody_tokens.dtype)
         interleaved[1::2] = melody_tokens  # Odd indices: melody tokens
@@ -185,12 +171,12 @@ class FrameDataset(Dataset):
             raise ValueError(f"Unsupported mode: {self.mode}")
 
 def create_dataloader(data_dir: Path,
-                     split: str = 'train',
-                     batch_size: int = 32,
-                     shuffle: bool = True,
-                     num_workers: int = 4,
-                     sequence_length: int = 256,
-                     mode: str = 'online') -> Tuple[torch.utils.data.DataLoader, Dict]:
+                     split: str,
+                     batch_size: int,
+                     shuffle: bool,
+                     num_workers: int,
+                     sequence_length: int,
+                     mode: str) -> Tuple[torch.utils.data.DataLoader, Dict]:
     """
     Create a DataLoader for the frame sequences
     
@@ -201,7 +187,7 @@ def create_dataloader(data_dir: Path,
         shuffle: Whether to shuffle the sequences
         num_workers: Number of worker processes for loading
         sequence_length: Length of each sequence
-        mode: 'online', 'offline', 'contrastive', or 'discriminator' for reward model training.
+        mode: Mode for data loading, must be one of: 'online', 'offline', 'contrastive', or 'discriminator'
         
     Returns:
         A tuple containing the DataLoader and the tokenizer_info dictionary.
@@ -212,6 +198,11 @@ def create_dataloader(data_dir: Path,
     print(f"  Num workers: {num_workers}")
     print(f"  Sequence length: {sequence_length}")
     print(f"  Mode: {mode}")
+    
+    # Validate mode
+    valid_modes = ['online', 'offline', 'contrastive', 'discriminator']
+    if mode not in valid_modes:
+        raise ValueError(f"Mode must be one of {valid_modes}, got {mode}")
     
     dataset = FrameDataset(
         data_dir=data_dir,
@@ -238,15 +229,24 @@ def main():
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    # Test configuration
+    test_config = {
+        'batch_size': 4,
+        'num_workers': 0,  # Use 0 for local testing to avoid memory issues
+        'sequence_length': 256,
+        'shuffle': True
+    }
+    
     # Test all modes
     for mode in ['online', 'offline', 'contrastive', 'discriminator']:
         print(f"\nTesting {mode} mode...")
         dataloader, tokenizer_info = create_dataloader(
             data_dir=data_dir,
-            split='valid', # Use smaller validation split for local testing
-            batch_size=4,
-            shuffle=True,
-            num_workers=0, # Use 0 for local testing to avoid memory issues
+            split='valid',  # Use smaller validation split for local testing
+            batch_size=test_config['batch_size'],
+            shuffle=test_config['shuffle'],
+            num_workers=test_config['num_workers'],
+            sequence_length=test_config['sequence_length'],
             mode=mode
         )
         
@@ -277,7 +277,7 @@ def main():
         elif mode == 'contrastive':
             print(f"Melody tokens shape: {batch['melody_tokens'].shape}")
             print(f"Chord tokens shape: {batch['chord_tokens'].shape}")
-        else: # discriminator
+        else:  # discriminator
             print(f"Interleaved tokens shape: {batch['interleaved_tokens'].shape}")
 
         print(f"Device: {next(iter(batch.values())).device if isinstance(next(iter(batch.values())), torch.Tensor) else 'cpu'}")

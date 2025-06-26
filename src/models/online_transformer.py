@@ -8,7 +8,7 @@ class OnlineTransformer(nn.Module):
     """
     Transformer model for online chord prediction from interleaved melody-chord sequences.
     
-    Input format (as per paper):
+    Input format:
     - Single interleaved sequence [chord_1, melody_1, chord_2, melody_2, ...]
     - At time t, model sees all tokens up to t-1
     - Must predict next token given history
@@ -23,12 +23,12 @@ class OnlineTransformer(nn.Module):
     
     def __init__(self,
                  vocab_size: int,
-                 embed_dim: int = 512,
-                 num_heads: int = 8,
-                 num_layers: int = 8,
-                 dropout: float = 0.1,
-                 max_seq_length: int = 512,
-                 pad_token_id: int = -100):
+                 embed_dim: int,
+                 num_heads: int,
+                 num_layers: int,
+                 dropout: float,
+                 max_seq_length: int,
+                 pad_token_id: int):
         super().__init__()
         
         self.vocab_size = vocab_size
@@ -110,7 +110,7 @@ if __name__ == "__main__":
     tokens = torch.randint(0, vocab_size, (batch_size, seq_length))
     
     # Initialize model
-    model = OnlineTransformer(vocab_size=vocab_size)
+    model = OnlineTransformer(vocab_size=vocab_size, embed_dim=512, num_heads=8, num_layers=8, dropout=0.1, max_seq_length=512, pad_token_id=177)
     
     # Forward pass
     logits = model(tokens)

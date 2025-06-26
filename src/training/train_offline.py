@@ -17,6 +17,7 @@ from src.models.offline_teacher import OfflineTeacherModel
 from src.data.dataset import create_dataloader
 from src.training.utils.logging import log_model_artifact
 from src.training.utils.schedulers import get_warmup_schedule
+from src.config.tokenization_config import PAD_TOKEN
 
 def main(config: dict):
     """Main training function."""
@@ -59,7 +60,6 @@ def main(config: dict):
     
     config['melody_vocab_size'] = tokenizer_info['melody_vocab_size']
     config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
-    pad_token_id = tokenizer_info.get('pad_token_id', -100)
     
     # --- Model, Optimizer, Scheduler ---
     model = OfflineTeacherModel(
@@ -70,7 +70,7 @@ def main(config: dict):
         num_layers=config['num_layers'],
         dropout=config['dropout'],
         max_seq_length=config['max_sequence_length'],
-        pad_token_id=pad_token_id
+        pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
     ).to(device)
 
     optimizer = Adafactor(
@@ -117,8 +117,8 @@ def main(config: dict):
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
             # Create masks
-            melody_mask = (batch['melody_tokens'] == pad_token_id)
-            chord_mask = (batch['chord_input'] == pad_token_id)
+            melody_mask = (batch['melody_tokens'] == model.pad_token_id)
+            chord_mask = (batch['chord_input'] == model.pad_token_id)
             
             logits = model(
                 melody_tokens=batch['melody_tokens'],
@@ -130,7 +130,7 @@ def main(config: dict):
             loss = nn.functional.cross_entropy(
                 logits.reshape(-1, config['chord_vocab_size']),
                 batch['chord_target'].reshape(-1),
-                ignore_index=pad_token_id
+                ignore_index=model.pad_token_id
             )
             
             optimizer.zero_grad()
@@ -156,8 +156,8 @@ def main(config: dict):
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
                 # Create masks
-                melody_mask = (batch['melody_tokens'] == pad_token_id)
-                chord_mask = (batch['chord_input'] == pad_token_id)
+                melody_mask = (batch['melody_tokens'] == model.pad_token_id)
+                chord_mask = (batch['chord_input'] == model.pad_token_id)
 
                 logits = model(
                     melody_tokens=batch['melody_tokens'],
@@ -169,7 +169,7 @@ def main(config: dict):
                 loss = nn.functional.cross_entropy(
                     logits.reshape(-1, config['chord_vocab_size']),
                     batch['chord_target'].reshape(-1),
-                    ignore_index=pad_token_id
+                    ignore_index=model.pad_token_id
                 )
                 total_val_loss += loss.item()
         
