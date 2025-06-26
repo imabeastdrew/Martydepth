@@ -78,7 +78,8 @@ def main(config):
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
         sequence_length=config['max_seq_length'],
-        mode='discriminator'
+        mode='discriminator',
+        shuffle=True
     )
     valid_loader, _ = create_dataloader(
         data_dir=data_path,
@@ -86,7 +87,8 @@ def main(config):
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
         sequence_length=config['max_seq_length'],
-        mode='discriminator'
+        mode='discriminator',
+        shuffle=False
     )
     
     config['vocab_size'] = tokenizer_info['total_vocab_size']
@@ -111,13 +113,68 @@ def main(config):
     
     # --- Smoke Test ---
     if config.get('smoke_test', False):
-        print("\n--- Smoke test: Model and data loaded correctly. ---")
+        print("\n--- Starting Smoke Test ---")
+        
+        # Override config with minimal values for smoke test
+        smoke_config = config.copy()
+        smoke_config.update({
+            'batch_size': 2,  # Minimal batch size
+            'max_seq_length': 16,  # Shorter sequences (will be doubled when concatenated)
+            'num_workers': 0,  # No parallel loading
+        })
+        
         try:
-            batch = next(iter(train_loader))
-            # The rest of your smoke test logic...
-            print("--- Smoke test successful: Single forward pass completed. ---")
+            print("1. Testing data loading...")
+            # Create minimal dataloader
+            smoke_loader, _ = create_dataloader(
+                data_dir=data_path,
+                split="valid",  # Use validation set (usually smaller)
+                batch_size=smoke_config['batch_size'],
+                num_workers=smoke_config['num_workers'],
+                sequence_length=smoke_config['max_seq_length'],  # Match the parameter name
+                mode='discriminator',
+                shuffle=False  # No need to shuffle for smoke test
+            )
+            
+            print("2. Testing model initialization...")
+            # Create model with minimal config
+            smoke_model = DiscriminativeRewardModel(
+                vocab_size=config['vocab_size'],
+                embed_dim=config['embed_dim'],
+                num_heads=config['num_heads'],
+                num_layers=config['num_layers'],
+                dropout=config['dropout'],
+                max_seq_length=smoke_config['max_seq_length'] * 2,  # Account for concatenation
+                pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
+            ).to(device)
+            
+            print("3. Testing forward pass...")
+            # Get single batch
+            batch = next(iter(smoke_loader))
+            real_sequences = batch['interleaved_tokens'].to(device)
+            
+            # Test with minimal fake sequences
+            fake_sequences = create_negative_samples(real_sequences)
+            combined_sequences = torch.cat([real_sequences, fake_sequences], dim=0)
+            padding_mask = (combined_sequences == smoke_model.pad_token_id)
+            
+            # Run forward pass
+            with torch.no_grad():  # No need for gradients in smoke test
+                predictions = smoke_model(combined_sequences, padding_mask=padding_mask)
+            
+            print("4. Testing optimizer creation...")
+            smoke_optimizer = Adam(smoke_model.parameters(), lr=config['learning_rate'])
+            
+            # Clean up
+            del smoke_model, predictions, combined_sequences, padding_mask
+            torch.cuda.empty_cache()
+            
+            print("--- Smoke test successful: All components verified. ---")
+            
         except Exception as e:
-            print(f"--- Smoke test failed during forward pass: {e} ---")
+            print(f"--- Smoke test failed: {str(e)} ---")
+            raise e
+        
         return
 
     # --- Training Loop ---

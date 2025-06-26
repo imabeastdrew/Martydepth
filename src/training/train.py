@@ -92,14 +92,80 @@ def main(config: dict):
 
     # --- Smoke Test ---
     if config.get('smoke_test', False):
-        print("\n--- Smoke test successful: Model and data loaded correctly. ---")
+        print("\n--- Starting Smoke Test ---")
+        
+        # Override config with minimal values for smoke test
+        smoke_config = config.copy()
+        smoke_config.update({
+            'batch_size': 2,  # Minimal batch size
+            'max_sequence_length': 16,  # Shorter sequences (will be doubled when interleaved)
+            'num_workers': 0,  # No parallel loading
+        })
+        
         try:
-            batch = next(iter(train_loader))
+            print("1. Testing data loading...")
+            # Create minimal dataloader
+            smoke_loader, _ = create_dataloader(
+                data_dir=data_path,
+                split="valid",  # Use validation set (usually smaller)
+                batch_size=smoke_config['batch_size'],
+                num_workers=smoke_config['num_workers'],
+                sequence_length=smoke_config['max_sequence_length'],  # Match the parameter name
+                mode='online',
+                shuffle=False  # No need to shuffle for smoke test
+            )
+            
+            print("2. Testing model initialization...")
+            # Create model with minimal config
+            smoke_model = OnlineTransformer(
+                vocab_size=config['vocab_size'],
+                embed_dim=config['embed_dim'],
+                num_heads=config['num_heads'],
+                num_layers=config['num_layers'],
+                dropout=config['dropout'],
+                max_seq_length=smoke_config['max_sequence_length'] * 2,  # Account for interleaving
+                pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
+            ).to(device)
+            
+            print("3. Testing forward pass...")
+            # Get single batch
+            batch = next(iter(smoke_loader))
             input_tokens = batch['input_tokens'].to(device)
-            model(input_tokens)
-            print("--- Smoke test successful: Single forward pass completed. ---")
+            padding_mask = batch['padding_mask'].to(device)
+            
+            # Run forward pass
+            with torch.no_grad():  # No need for gradients in smoke test
+                logits = smoke_model(input_tokens, padding_mask=padding_mask)
+            
+            print("4. Testing loss function...")
+            target_tokens = batch['target_tokens'].to(device)
+            loss = nn.CrossEntropyLoss(ignore_index=tokenizer_info.get('pad_token_id', PAD_TOKEN))(
+                logits.view(-1, config['vocab_size']), 
+                target_tokens.view(-1)
+            )
+            
+            print("5. Testing optimizer and scheduler creation...")
+            smoke_optimizer = Adafactor(
+                smoke_model.parameters(),
+                lr=config['learning_rate'],
+                scale_parameter=False,
+                relative_step=False
+            )
+            smoke_scheduler = get_warmup_schedule(
+                smoke_optimizer,
+                num_warmup_steps=config['warmup_steps']
+            )
+            
+            # Clean up
+            del smoke_model, logits, input_tokens, target_tokens, padding_mask
+            torch.cuda.empty_cache()
+            
+            print("--- Smoke test successful: All components verified. ---")
+            
         except Exception as e:
-            print(f"--- Smoke test failed during forward pass: {e} ---")
+            print(f"--- Smoke test failed: {str(e)} ---")
+            raise e
+        
         return
 
     # --- Training Loop ---

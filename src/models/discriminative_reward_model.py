@@ -20,11 +20,13 @@ class DiscriminativeRewardModel(nn.Module):
                  num_heads: int,
                  num_layers: int,
                  dropout: float,
-                 max_seq_length: int):
+                 max_seq_length: int,
+                 pad_token_id: int):
         super().__init__()
         
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(max_seq_length + 1, embed_dim)
+        self.pad_token_id = pad_token_id
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,

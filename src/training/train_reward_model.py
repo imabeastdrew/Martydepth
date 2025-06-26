@@ -123,17 +123,78 @@ def main(config):
 
     # --- Smoke Test ---
     if config.get('smoke_test', False):
-        print("\n--- Smoke test: Model and data loaded correctly. ---")
+        print("\n--- Starting Smoke Test ---")
+        
+        # Override config with minimal values for smoke test
+        smoke_config = config.copy()
+        smoke_config.update({
+            'batch_size': 2,  # Minimal batch size
+            'max_seq_length': 32,  # Shorter sequences
+            'num_workers': 0,  # No parallel loading
+        })
+        
         try:
-            batch = next(iter(train_loader))
+            print("1. Testing data loading...")
+            # Create minimal dataloader
+            smoke_loader, _ = create_dataloader(
+                data_dir=Path(config['data_dir']),
+                split="valid",  # Use validation set (usually smaller)
+                batch_size=smoke_config['batch_size'],
+                num_workers=smoke_config['num_workers'],
+                sequence_length=smoke_config['max_seq_length'],
+                mode='contrastive',
+                shuffle=False  # No need to shuffle for smoke test
+            )
+            
+            print("2. Testing model initialization...")
+            # Create model with minimal config
+            smoke_model = ContrastiveRewardModel(
+                melody_vocab_size=tokenizer_info['melody_vocab_size'],
+                chord_vocab_size=tokenizer_info['chord_vocab_size'],
+                embed_dim=config['embed_dim'],
+                num_heads=config['num_heads'],
+                num_layers=config['num_layers'],
+                dropout=config['dropout'],
+                max_seq_length=smoke_config['max_seq_length'],
+                pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
+            ).to(device)
+            
+            print("3. Testing forward pass...")
+            # Get single batch
+            batch = next(iter(smoke_loader))
             melody_tokens = batch['melody_tokens'].to(device)
             chord_tokens = batch['chord_tokens'].to(device)
             
-            model(melody_tokens, chord_tokens) # Test one forward pass
+            # Create padding masks
+            melody_mask = (melody_tokens == smoke_model.pad_token_id)
+            chord_mask = (chord_tokens == smoke_model.pad_token_id)
             
-            print("--- Smoke test successful: Single forward pass completed. ---")
+            # Run forward pass
+            with torch.no_grad():  # No need for gradients in smoke test
+                melody_embeds, chord_embeds = smoke_model(
+                    melody_tokens,
+                    chord_tokens,
+                    melody_padding_mask=melody_mask,
+                    chord_padding_mask=chord_mask
+                )
+            
+            print("4. Testing loss function...")
+            loss_fn = InfoNCELoss(temperature=config['temperature'])
+            loss = loss_fn(melody_embeds, chord_embeds)
+            
+            print("5. Testing optimizer creation...")
+            smoke_optimizer = Adam(smoke_model.parameters(), lr=config['learning_rate'])
+            
+            # Clean up
+            del smoke_model, melody_embeds, chord_embeds, melody_mask, chord_mask
+            torch.cuda.empty_cache()
+            
+            print("--- Smoke test successful: All components verified. ---")
+            
         except Exception as e:
-            print(f"--- Smoke test failed during forward pass: {e} ---")
+            print(f"--- Smoke test failed: {str(e)} ---")
+            raise e
+        
         return
 
     # Training loop

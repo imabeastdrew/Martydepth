@@ -207,10 +207,15 @@ class OfflineTeacherModel(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.max_seq_length = max_seq_length
+        self.pad_token_id = pad_token_id
         
         # Embeddings
         self.embeddings = OfflineTeacherEmbeddings(
-            melody_vocab_size, chord_vocab_size, embed_dim, max_seq_length, pad_token_id
+            melody_vocab_size=melody_vocab_size,
+            chord_vocab_size=chord_vocab_size,
+            embed_dim=embed_dim,
+            max_seq_length=max_seq_length,
+            pad_token_id=pad_token_id
         )
         
         # Full Transformer using PyTorch's implementation

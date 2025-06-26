@@ -34,6 +34,7 @@ class OnlineTransformer(nn.Module):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.pad_token_id = pad_token_id
+        self.max_seq_length = max_seq_length
         
         # Single embedding table for all tokens
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
@@ -75,6 +76,9 @@ class OnlineTransformer(nn.Module):
             logits: Prediction logits for next token [batch_size, seq_length, vocab_size]
         """
         batch_size, seq_length = tokens.shape
+        
+        if seq_length > self.max_seq_length:
+            raise ValueError(f"Sequence length {seq_length} exceeds max_seq_length {self.max_seq_length}")
         
         # Create position indices and causal mask
         positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)

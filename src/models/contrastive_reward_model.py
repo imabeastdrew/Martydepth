@@ -93,6 +93,8 @@ class ContrastiveRewardModel(nn.Module):
                  pad_token_id: int):
         super().__init__()
         
+        self.pad_token_id = pad_token_id
+        
         self.melody_encoder = Encoder(
             vocab_size=melody_vocab_size,
             embed_dim=embed_dim,
