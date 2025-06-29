@@ -5,18 +5,17 @@ Frame-based Preprocessing: Convert raw chord data into frame sequences
 
 import json
 import pickle
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
-import numpy as np
-from dataclasses import dataclass
-from collections import defaultdict
 import random
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Tuple, Set, Any, Optional
+
+import numpy as np
 
 from src.config.tokenization_config import (
     SILENCE_TOKEN,
     CHORD_TOKEN_START,
     CHORD_SILENCE_TOKEN,
-    CHORD_ONSET_HOLD_START,
     MELODY_ONSET_HOLD_START,
     MIN_MIDI_NOTE,
     MAX_MIDI_NOTE,
@@ -24,7 +23,7 @@ from src.config.tokenization_config import (
     MELODY_VOCAB_SIZE,
     PAD_TOKEN,
     midi_to_onset_hold_tokens,
-    token_to_midi_and_type,
+    midi_to_token_index,
 )
 from src.data.datastructures import FrameSequence
 
@@ -46,152 +45,241 @@ def validate_sequence(sequence: FrameSequence) -> Dict[str, Any]:
     
     # Check for completely silent sequences
     if len(melody_content) > 0:
-        melody_silence_ratio = np.sum(melody_content == SILENCE_TOKEN) / len(melody_content)
-        chord_silence_ratio = np.sum(chord_content == CHORD_SILENCE_TOKEN) / len(chord_content)
+        # Count silence tokens and hold tokens
+        melody_silence_count = np.sum(melody_content == SILENCE_TOKEN)
+        melody_hold_count = np.sum(melody_content >= MELODY_ONSET_HOLD_START)
+        melody_onset_count = len(melody_content) - melody_silence_count - melody_hold_count
+        
+        # Calculate ratios
+        melody_silence_ratio = melody_silence_count / len(melody_content)
+        melody_hold_ratio = melody_hold_count / len(melody_content)
+        melody_onset_ratio = melody_onset_count / len(melody_content)
         
         # Flag sequences that are completely silent
-        if melody_silence_ratio >= 1.0 and chord_silence_ratio >= 1.0:
+        if melody_silence_ratio == 1.0:
             validation_results["valid"] = False
-            validation_results["issues"].append("Completely silent sequence (100% melody + chord silence)")
-        
-        # Flag sequences with 100% melody silence (even if chords exist)
-        elif melody_silence_ratio >= 1.0:
-            validation_results["valid"] = False
-            validation_results["issues"].append("Melody-only silent sequence (100% melody silence)")
-        
-        # Flag sequences with 100% chord silence (even if melody exists)  
-        elif chord_silence_ratio >= 1.0:
-            validation_results["valid"] = False
-            validation_results["issues"].append("Chord-only silent sequence (100% chord silence)")
-        
-        # Flag sequences with very limited content
-        if len(melody_content) < 10:
-            validation_results["valid"] = False
-            validation_results["issues"].append(f"Very short content length: {len(melody_content)}")
+            validation_results["issues"].append("completely_silent_melody")
             
-        # Check for musical content
-        unique_melody = len(np.unique(melody_content[melody_content != SILENCE_TOKEN]))
-        unique_chords = len(np.unique(chord_content[chord_content != CHORD_SILENCE_TOKEN]))
-        
-        if unique_melody == 0 and unique_chords == 0:
-            validation_results["valid"] = False
-            validation_results["issues"].append("No musical content (all silence tokens)")
-    else:
-        validation_results["valid"] = False
-        validation_results["issues"].append("Empty sequence after padding removal")
-    
-    # Check melody token ranges (interleaved)
-    invalid_melody = melody_tokens[
-        (melody_tokens < 0) | 
-        ((melody_tokens != SILENCE_TOKEN) & (melody_tokens != PAD_TOKEN) & 
-         ((melody_tokens < MELODY_ONSET_HOLD_START) | (melody_tokens >= PAD_TOKEN)))
-    ]
-    if len(invalid_melody) > 0:
-        validation_results["valid"] = False
-        validation_results["issues"].append(f"Invalid melody tokens: {np.unique(invalid_melody)}")
-    
-    # Check chord token ranges  
-    invalid_chords = chord_tokens[(chord_tokens < CHORD_TOKEN_START) & (chord_tokens != PAD_TOKEN)]
-    if len(invalid_chords) > 0:
-        validation_results["valid"] = False
-        validation_results["issues"].append(f"Invalid chord tokens: {np.unique(invalid_chords)}")
-    
-    # Check for PAD tokens in chord sequences (should use CHORD_SILENCE_TOKEN instead)
-    pad_in_chords = np.sum(chord_tokens == PAD_TOKEN)
-    if pad_in_chords > 0:
-        validation_results["valid"] = False
-        validation_results["issues"].append(f"PAD tokens found in chord sequence: {pad_in_chords}")
-    
-    # Calculate statistics
-    content_length = np.sum(non_pad_mask)
-    
-    validation_results["stats"] = {
-        "content_length": int(content_length),
-        "padding_length": int(256 - content_length),
-        "padding_ratio": float(1 - content_length / 256),
-        "melody_silence_ratio": float(np.sum(melody_content == SILENCE_TOKEN) / len(melody_content)) if len(melody_content) > 0 else 1.0,
-        "chord_silence_ratio": float(np.sum(chord_content == CHORD_SILENCE_TOKEN) / len(chord_content)) if len(chord_content) > 0 else 1.0,
-    }
+        # Store statistics
+        validation_results["stats"].update({
+            "melody_silence_ratio": melody_silence_ratio,
+            "melody_hold_ratio": melody_hold_ratio,
+            "melody_onset_ratio": melody_onset_ratio,
+            "sequence_length": len(melody_content)
+        })
     
     return validation_results
 
+def get_chord_intervals(chord_type):
+    """Get intervals for a chord type number."""
+    # Chord type mapping based on common chord types
+    chord_intervals = {
+        0: [0, 4, 7],      # Major
+        1: [0, 3, 7],      # Minor
+        2: [0, 4, 7, 10],  # Dominant 7th
+        3: [0, 4, 7, 11],  # Major 7th
+        4: [0, 3, 7, 10],  # Minor 7th
+        5: [0, 3, 6],      # Diminished
+        6: [0, 4, 8],      # Augmented
+        7: [0, 3, 6, 9],   # Diminished 7th
+        8: [0, 3, 7, 11],  # Minor/Major 7th
+        9: [0, 4, 7, 9],   # Major 6th
+        10: [0, 3, 7, 9],  # Minor 6th
+    }
+    return chord_intervals.get(chord_type, [0, 4, 7])  # Default to major triad if unknown
+
 class ChordTokenizer:
+    """Tokenizer for chord sequences."""
+    
     def __init__(self):
-        self.chord_to_token = {}
-        self.token_to_chord = {}
-        self.next_token_id = CHORD_ONSET_HOLD_START
-        self.silence_token = CHORD_SILENCE_TOKEN
+        # List to store unique chord patterns
+        self.chord_patterns = []
+        # Start token after melody tokens
+        self.token_offset = CHORD_TOKEN_START
+        # Track unique interval patterns for analysis
+        self.interval_patterns = set()
+        # Special tokens
+        self.silence_token = self.token_offset - 1  # Last melody token
+        self.pad_token = PAD_TOKEN
         
-    def _get_chord_key(self, root: int, intervals: List[int], inversion: int) -> Tuple[int, Tuple[int, ...], int]:
-        if not intervals:
-            raise ValueError("Chord must have at least one interval")
-        if not all(isinstance(x, int) for x in intervals):
-            raise ValueError("All intervals must be integers")
-        if not isinstance(root, int) or not isinstance(inversion, int):
-            raise ValueError("Root and inversion must be integers")
-            
-        return (root, tuple(sorted(intervals)), inversion)
-    
-    def encode_chord(self, root: int, intervals: List[int], inversion: int) -> Tuple[int, int]:
-        chord_key = self._get_chord_key(root, intervals, inversion)
+    def _find_or_add_pattern(self, root: int, intervals: List[int], inversion: int) -> int:
+        """Find existing pattern or add new one and return its token."""
+        # Create pattern tuple (root, intervals as tuple for comparison, inversion)
+        pattern = (root, tuple(intervals), inversion)
         
-        if chord_key not in self.chord_to_token:
-            onset_token = self.next_token_id
-            hold_token = self.next_token_id + 1
-            self.next_token_id += 2
-            
-            self.chord_to_token[chord_key] = (onset_token, hold_token)
-            self.token_to_chord[onset_token] = (*chord_key, True)
-            self.token_to_chord[hold_token] = (*chord_key, False)
-            
-        return self.chord_to_token[chord_key]
+        # Try to find existing pattern
+        try:
+            idx = self.chord_patterns.index(pattern)
+            return idx + self.token_offset
+        except ValueError:
+            # Add new pattern
+            self.chord_patterns.append(pattern)
+            # Track unique interval patterns for analysis
+            self.interval_patterns.add(tuple(sorted(set(intervals))))
+            return len(self.chord_patterns) - 1 + self.token_offset
     
-    def decode_chord(self, token: int) -> Tuple[int, List[int], int, bool]:
+    def encode_chord(self, chord_data: Dict) -> Tuple[int, int]:
+        """Encode a chord into onset and hold tokens."""
+        if not chord_data:
+            return self.silence_token, self.silence_token
+            
+        root = chord_data['root_pitch_class']
+        intervals = chord_data['root_position_intervals']
+        inversion = chord_data.get('inversion', 0)
+        
+        onset_token = self._find_or_add_pattern(root, intervals, inversion)
+        hold_token = onset_token + len(self.chord_patterns)  # Hold tokens start after all onset tokens
+        
+        return onset_token, hold_token
+    
+    def decode_token(self, token: int) -> Optional[Dict]:
+        """Decode a token back to chord information."""
         if token == self.silence_token:
-            return -1, [], -1, False
-        if token not in self.token_to_chord:
-            raise ValueError(f"Unknown token ID: {token}")
+            return None
+        if token == self.pad_token:
+            return None
             
-        root, intervals, inversion, is_onset = self.token_to_chord[token]
-        return root, list(intervals), inversion, is_onset
+        # Check if it's a hold token
+        is_hold = token >= self.token_offset + len(self.chord_patterns)
+        if is_hold:
+            token -= len(self.chord_patterns)
+            
+        # Get pattern from list
+        pattern_idx = token - self.token_offset
+        if pattern_idx < 0 or pattern_idx >= len(self.chord_patterns):
+            return None
+            
+        root, intervals, inversion = self.chord_patterns[pattern_idx]
+        
+        return {
+            'root_pitch_class': root,
+            'root_position_intervals': list(intervals),
+            'inversion': inversion,
+            'is_hold': is_hold
+        }
+    
+    def _convert_to_standard_intervals(self, consecutive_intervals):
+        """Convert consecutive intervals to standard intervals from root.
+        
+        Args:
+            consecutive_intervals: List of intervals between consecutive notes
+            
+        Returns:
+            List of intervals from the root note
+        """
+        if not consecutive_intervals:
+            return [0]  # Just the root
+            
+        # Convert consecutive intervals to cumulative intervals
+        standard_intervals = [0]  # Start with root
+        current_sum = 0
+        for interval in consecutive_intervals:
+            current_sum += interval
+            standard_intervals.append(current_sum)
+        
+        return standard_intervals
+
+    def is_melody_note_in_chord(self, melody_note: int, chord_token: int) -> bool:
+        """Check if a melody note is part of a chord."""
+        if chord_token == self.silence_token or chord_token == self.pad_token:
+            return False
+            
+        # Get chord pattern
+        chord_info = self.decode_token(chord_token)
+        if not chord_info:
+            return False
+            
+        # Get all possible note positions for this chord
+        root = chord_info['root_pitch_class']
+        consecutive_intervals = chord_info['root_position_intervals']
+        
+        # Convert to standard intervals from root
+        standard_intervals = self._convert_to_standard_intervals(consecutive_intervals)
+        
+        # Check if melody note (mod 12) matches any chord note
+        melody_pitch_class = melody_note % 12
+        chord_notes = {(root + interval) % 12 for interval in standard_intervals}
+        
+        return melody_pitch_class in chord_notes
+    
+    def get_vocab_size(self) -> int:
+        """Get total vocabulary size including onset and hold tokens."""
+        pattern_count = len(self.chord_patterns)
+        return pattern_count * 2  # Double for hold tokens
+    
+    def save(self, save_dir: Path):
+        """Save tokenizer information."""
+        tokenizer_info = {
+            'chord_patterns': self.chord_patterns,
+            'token_offset': self.token_offset,
+            'interval_patterns': list(self.interval_patterns),
+            'vocab_size': self.get_vocab_size()
+        }
+        
+        with open(save_dir / 'tokenizer_info.json', 'w') as f:
+            json.dump(tokenizer_info, f)
+    
+    @classmethod
+    def load(cls, load_dir: Path) -> 'ChordTokenizer':
+        """Load tokenizer from saved information."""
+        with open(load_dir / 'tokenizer_info.json', 'r') as f:
+            info = json.load(f)
+            
+        tokenizer = cls()
+        tokenizer.chord_patterns = info['chord_patterns']
+        tokenizer.token_offset = info['token_offset']
+        tokenizer.interval_patterns = set(tuple(p) for p in info['interval_patterns'])
+        
+        return tokenizer
 
 class MIDITokenizer:
+    """Tokenizer for MIDI note sequences."""
+    
     def __init__(self):
-        self.silence_token = SILENCE_TOKEN
-        self.min_midi_note = MIN_MIDI_NOTE
-        self.max_midi_note = MAX_MIDI_NOTE
+        """Initialize the tokenizer with predefined token ranges."""
+        # Token ranges
+        self.onset_tokens = range(0, UNIQUE_MIDI_NOTES)  # 0-87 for onsets
+        self.silence_token = SILENCE_TOKEN  # 88 for silence
+        self.hold_tokens = range(MELODY_ONSET_HOLD_START, MELODY_ONSET_HOLD_START + UNIQUE_MIDI_NOTES)  # 89-176 for holds
+        self.pad_token = PAD_TOKEN  # 177 for padding
         
-        # Build token mappings using interleaved approach
-        self.note_to_token = {}
-        self.token_to_note = {self.silence_token: (-1, False)}
+        # Create mappings
+        self.note_to_token = {}  # Maps MIDI note to (onset, hold) token pair
+        self.token_to_note = {}  # Maps token to MIDI note
         
-        for midi_num in range(self.min_midi_note, self.max_midi_note + 1):
-            onset_token, hold_token = midi_to_onset_hold_tokens(midi_num)
+        # Initialize mappings
+        for midi_note in range(MIN_MIDI_NOTE, MAX_MIDI_NOTE + 1):
+            onset_token = midi_note - MIN_MIDI_NOTE
+            hold_token = onset_token + MELODY_ONSET_HOLD_START
             
-            self.note_to_token[midi_num] = (onset_token, hold_token)
-            self.token_to_note[onset_token] = (midi_num, True)
-            self.token_to_note[hold_token] = (midi_num, False)
-
-    def encode_midi_note(self, midi_number: int) -> Tuple[int, int]:
-        """Encode MIDI note to onset/hold token pair"""
-        if not (self.min_midi_note <= midi_number <= self.max_midi_note):
+            self.note_to_token[midi_note] = (onset_token, hold_token)
+            self.token_to_note[onset_token] = midi_note
+            self.token_to_note[hold_token] = midi_note
+    
+    def encode_midi_note(self, midi_note: int) -> Tuple[int, int]:
+        """Convert MIDI note to onset/hold token pair."""
+        if midi_note not in self.note_to_token:
             return self.silence_token, self.silence_token
+        return self.note_to_token[midi_note]
+    
+    def decode_token(self, token: int) -> Tuple[Optional[int], bool]:
+        """Decode token to MIDI note and onset/hold flag.
         
-        return self.note_to_token[midi_number]
-
-    def decode_note(self, token: int) -> Tuple[int, int, bool]:
-        """Decode token to (midi_number, unused, is_onset)"""
-        if token == self.silence_token:
-            return -1, -1, False
-        if token not in self.token_to_note:
-            raise ValueError(f"Unknown token ID: {token}")
-        
-        midi_num, is_onset = self.token_to_note[token]
-        return midi_num, -1, is_onset
-
-    @property
-    def next_token_id(self):
-        return CHORD_TOKEN_START
+        Args:
+            token: Token to decode
+            
+        Returns:
+            Tuple of (midi_note, is_hold) or (None, False) for special tokens
+        """
+        if token == self.silence_token or token == self.pad_token:
+            return None, False
+            
+        midi_note = self.token_to_note.get(token)
+        if midi_note is None:
+            return None, False
+            
+        is_hold = token >= MELODY_ONSET_HOLD_START
+        return midi_note, is_hold
 
 class FramePreprocessor:
     def __init__(self, sequence_length: int = 256):
@@ -200,86 +288,124 @@ class FramePreprocessor:
         self.melody_tokenizer = MIDITokenizer()
         
     def convert_song_to_frames(self, song_data: Dict) -> Tuple[List[int], List[int]]:
-        num_beats = int(song_data.get('annotations', {}).get('num_beats', 0))
+        """Convert song data to frame sequences.
+        
+        Args:
+            song_data (dict): Raw song data
+            
+        Returns:
+            tuple: (melody_sequence, chord_sequence)
+        """
+        annotations = song_data.get('annotations', {})
+        if not annotations:
+            return [], []
+            
+        num_beats = int(annotations.get('num_beats', 0))
         if num_beats == 0:
             return [], []
-        total_frames = num_beats * 4
+            
+        melody_seq = []
+        chord_seq = []
         
-        melody_tokens = [self.melody_tokenizer.silence_token] * total_frames
-        chord_tokens = [self.chord_tokenizer.silence_token] * total_frames
+        # Get melody and harmony data directly from annotations
+        melody_data = annotations.get('melody', [])
+        harmony_data = annotations.get('harmony', [])
         
-        for note in song_data.get('annotations', {}).get('melody', []):
-            onset_frame = int(note['onset'] * 4)
-            offset_frame = int(note['offset'] * 4)
-            pitch_class = note['pitch_class']
-            octave = note['octave']
-            midi_number = (octave + 1) * 12 + pitch_class
-            if not (0 <= midi_number <= self.melody_tokenizer.max_midi_note):
-                continue
-
-            onset_token, hold_token = self.melody_tokenizer.encode_midi_note(midi_number)
-            if onset_frame < total_frames:
-                melody_tokens[onset_frame] = onset_token
-                for frame in range(onset_frame + 1, min(offset_frame, total_frames)):
-                    melody_tokens[frame] = hold_token
-
-        for chord in song_data.get('annotations', {}).get('harmony', []):
-            onset_frame = int(chord['onset'] * 4)
-            offset_frame = int(chord['offset'] * 4)
-            try:
-                root = chord.get('root_pitch_class')
-                intervals = chord.get('root_position_intervals', [])
-                inversion = chord.get('inversion', 0)
-                if root is None or not intervals:
-                    continue
-                onset_token, hold_token = self.chord_tokenizer.encode_chord(root, intervals, inversion)
-                if onset_frame < total_frames:
-                    chord_tokens[onset_frame] = onset_token
-                    for frame in range(onset_frame + 1, min(offset_frame, total_frames)):
-                        chord_tokens[frame] = hold_token
-            except (KeyError, ValueError, TypeError):
-                continue
-        return melody_tokens, chord_tokens
+        if not melody_data or not harmony_data:
+            return [], []
+        
+        # Track the current note for hold tokens
+        current_melody_note = None
+        current_melody_onset = -1
+        has_invalid_notes = False
+        
+        # Create beat-aligned sequences
+        for beat_idx in range(num_beats):
+            # Find melody note for this beat
+            new_melody_note = None
+            for note in melody_data:
+                if note['onset'] <= beat_idx < note['offset']:
+                    new_melody_note = note['pitch_class'] + (note['octave'] * 12)
+                    # Check if note is in valid range
+                    if not (MIN_MIDI_NOTE <= new_melody_note <= MAX_MIDI_NOTE):
+                        has_invalid_notes = True
+                    break
+            
+            # Add melody token
+            if new_melody_note is not None:
+                if new_melody_note != current_melody_note or beat_idx == current_melody_onset:
+                    # New note or first beat of current note - use onset token
+                    onset_token, hold_token = self.melody_tokenizer.encode_midi_note(new_melody_note)
+                    melody_seq.append(onset_token)
+                    current_melody_note = new_melody_note
+                    current_melody_onset = beat_idx
+                else:
+                    # Continuing note - use hold token
+                    onset_token, hold_token = self.melody_tokenizer.encode_midi_note(new_melody_note)
+                    melody_seq.append(hold_token)
+            else:
+                melody_seq.append(SILENCE_TOKEN)
+                current_melody_note = None
+                current_melody_onset = -1
+            
+            # Find chord for this beat
+            chord_data = None
+            for chord in harmony_data:
+                if chord['onset'] <= beat_idx < chord['offset']:
+                    chord_data = chord
+                    break
+            
+            # Add chord token
+            if chord_data is not None:
+                onset_token, hold_token = self.chord_tokenizer.encode_chord(chord_data)
+                chord_seq.append(onset_token)
+            else:
+                chord_seq.append(self.chord_tokenizer.silence_token)
+        
+        # If sequence has invalid notes, return empty lists to filter it out
+        if has_invalid_notes:
+            print(f"Filtered sequence - invalid MIDI notes")
+            return [], []
+        
+        # Pad sequences to desired length
+        if len(melody_seq) < self.sequence_length:
+            pad_len = self.sequence_length - len(melody_seq)
+            melody_seq.extend([PAD_TOKEN] * pad_len)
+            chord_seq.extend([PAD_TOKEN] * pad_len)
+        
+        return melody_seq, chord_seq
     
     def process_song(self, song_id: str, song_data: Dict) -> List[FrameSequence]:
-        sequences = []
+        """Process a song into frame sequences.
         
-        if 'MELODY' not in song_data.get('tags', []) or 'HARMONY' not in song_data.get('tags', []):
-            return sequences
-        
-        melody_tokens, chord_tokens = self.convert_song_to_frames(song_data)
-        
-        if not melody_tokens or not chord_tokens:
-            return sequences
-        
-        for start_idx in range(0, len(melody_tokens), self.sequence_length):
-            end_idx = min(start_idx + self.sequence_length, len(melody_tokens))
+        Args:
+            song_id (str): Unique identifier for the song
+            song_data (dict): Raw song data
             
-            melody_seq = melody_tokens[start_idx:end_idx]
-            chord_seq = chord_tokens[start_idx:end_idx]
+        Returns:
+            list: List of FrameSequence objects
+        """
+        melody_seq, chord_seq = self.convert_song_to_frames(song_data)
+        if not melody_seq or not chord_seq:
+            return []
             
-            if len(melody_seq) < self.sequence_length:
-                pad_len = self.sequence_length - len(melody_seq)
-                melody_seq.extend([PAD_TOKEN] * pad_len)
-                chord_seq.extend([CHORD_SILENCE_TOKEN] * pad_len)
-            
-            sequence = FrameSequence(
-                melody_tokens=np.array(melody_seq),
-                chord_tokens=np.array(chord_seq),
-                frame_times=np.zeros(self.sequence_length),
-                frame_durations=np.zeros(self.sequence_length),
-                song_id=song_id,
-                start_frame=start_idx
-            )
-            
-            # Validate sequence before adding
-            validation = validate_sequence(sequence)
-            if validation["valid"]:
-                sequences.append(sequence)
-            else:
-                print(f"Filtered sequence {song_id}:{start_idx} - {', '.join(validation['issues'])}")
+        # Create sequence object
+        sequence = FrameSequence(
+            melody_tokens=np.array(melody_seq),
+            chord_tokens=np.array(chord_seq),
+            frame_times=np.zeros(self.sequence_length),
+            frame_durations=np.zeros(self.sequence_length),
+            song_id=song_id,
+            start_frame=0
+        )
         
-        return sequences
+        # Validate sequence before adding
+        validation = validate_sequence(sequence)
+        if validation["valid"]:
+            return [sequence]
+        else:
+            print(f"Filtered sequence {song_id} - {', '.join(validation['issues'])}")
+            return []
 
 def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTokenizer, 
                        melody_tokenizer: MIDITokenizer, output_dir: Path):
@@ -292,15 +418,13 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
 
     tokenizer_info = {
         "melody_vocab_size": MELODY_VOCAB_SIZE,
-        "chord_vocab_size": chord_tokenizer.next_token_id - CHORD_TOKEN_START,
-        "total_vocab_size": chord_tokenizer.next_token_id,
+        "chord_vocab_size": chord_tokenizer.get_vocab_size(),
+        "total_vocab_size": chord_tokenizer.get_vocab_size(),
         "pad_token_id": PAD_TOKEN,
         "chord_token_start": CHORD_TOKEN_START,
         "chord_silence_token": CHORD_SILENCE_TOKEN,
         "midi_range": {"min": MIN_MIDI_NOTE, "max": MAX_MIDI_NOTE},
         "unique_midi_notes": UNIQUE_MIDI_NOTES,
-        "token_to_chord": chord_tokenizer.token_to_chord,
-        "token_to_note": melody_tokenizer.token_to_note,
     }
 
     with open(output_dir / 'tokenizer_info.json', 'w') as f:
@@ -334,13 +458,69 @@ def main():
     print("Processing songs into frame sequences...")
     song_sequences = defaultdict(list)
     
+    # Track statistics
+    total_melody_notes = 0
+    melody_in_chord = 0
+    unique_chords = set()
+    inversion_counts = defaultdict(int)
+    
     for song_id, song_data in raw_data.items():
-        if not isinstance(song_data, dict) or 'annotations' not in song_data:
+        if not isinstance(song_data, dict):
             continue
+            
+        annotations = song_data.get('annotations', {})
+        if not annotations:
+            continue
+            
+        melody_data = annotations.get('melody')
+        harmony_data = annotations.get('harmony')
+        
+        if not melody_data or not harmony_data:
+            continue
+            
+        # Track chord patterns in this song
+        for chord in harmony_data:
+            root = chord['root_pitch_class']
+            intervals = chord['root_position_intervals']
+            inversion = chord.get('inversion', 0)
+            unique_chords.add((root, tuple(intervals), inversion))
+            inversion_counts[inversion] += 1
             
         sequences = preprocessor.process_song(song_id, song_data)
         if sequences:
             song_sequences[song_id] = sequences
+            
+            # Analyze melody-in-chord ratio for this sequence
+            for seq in sequences:
+                melody_tokens = seq.melody_tokens
+                chord_tokens = seq.chord_tokens
+                
+                for m_token, c_token in zip(melody_tokens, chord_tokens):
+                    if m_token != SILENCE_TOKEN and m_token != PAD_TOKEN:
+                        total_melody_notes += 1
+                        # Get MIDI note number from token
+                        midi_note, is_hold = preprocessor.melody_tokenizer.decode_token(m_token)
+                        if midi_note is not None:  # Skip silence/pad tokens
+                            if preprocessor.chord_tokenizer.is_melody_note_in_chord(
+                                midi_note,  # Pass the actual MIDI note
+                                c_token
+                            ):
+                                melody_in_chord += 1
+    
+    # Print chord analysis
+    print("\nChord Analysis:")
+    print(f"Total unique chord patterns: {len(unique_chords)}")
+    print("\nInversion distribution:")
+    for inv, count in sorted(inversion_counts.items()):
+        print(f"  Inversion {inv}: {count} occurrences")
+        
+    # Print melody-in-chord analysis
+    print("\nMelody-in-Chord Analysis:")
+    if total_melody_notes > 0:
+        in_chord_ratio = (melody_in_chord / total_melody_notes) * 100
+        print(f"Total melody notes: {total_melody_notes}")
+        print(f"Notes in chord: {melody_in_chord}")
+        print(f"Melody-in-chord ratio: {in_chord_ratio:.2f}%")
     
     song_ids = list(song_sequences.keys())
     random.seed(42)
@@ -357,7 +537,7 @@ def main():
     valid_sequences = [seq for song_id in valid_songs for seq in song_sequences[song_id]]
     test_sequences = [seq for song_id in test_songs for seq in song_sequences[song_id]]
     
-    print("Saving processed data...")
+    print("\nSaving processed data...")
     save_processed_data(train_sequences, preprocessor.chord_tokenizer, 
                        preprocessor.melody_tokenizer, output_dir / 'train')
     save_processed_data(valid_sequences, preprocessor.chord_tokenizer,
@@ -373,10 +553,15 @@ def main():
     with open(output_dir / 'train' / 'tokenizer_info.json', 'r') as f:
         final_tokenizer_info = json.load(f)
 
-    print(f"Vocabulary sizes:")
+    print(f"\nVocabulary sizes:")
     print(f"  Melody tokens: {final_tokenizer_info['melody_vocab_size']}")
     print(f"  Chord tokens: {final_tokenizer_info['chord_vocab_size']}")
     print(f"  Total tokens: {final_tokenizer_info['total_vocab_size']}")
+    
+    # Print interval pattern analysis
+    print("\nUnique interval patterns:")
+    for pattern in sorted(preprocessor.chord_tokenizer.interval_patterns):
+        print(f"  {pattern}")
 
 if __name__ == "__main__":
     main() 

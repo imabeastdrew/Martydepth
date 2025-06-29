@@ -115,7 +115,7 @@ def generate_offline(model: OfflineTeacherModel,
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
             # The ground truth chords are the full chord token sequence
-            gt_chords = batch['chord_tokens'].to(device)
+            gt_chords = batch['chord_target'].to(device)
 
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]

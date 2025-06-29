@@ -14,7 +14,9 @@ from src.config.tokenization_config import (
     MELODY_ONSET_HOLD_START,
     MAX_MIDI_NOTE,
     CHORD_TOKEN_START,
+    CHORD_TYPES,
 )
+from src.data.preprocess_frames import get_complete_chord_intervals
 
 def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
     """
@@ -64,32 +66,89 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
         parsed_data.append({'notes': notes, 'chords': chords})
     return parsed_data
 
-def is_pitch_in_chord(pitch: int, chord_token: int, tokenizer_info: Dict) -> bool:
+def convert_to_standard_intervals(consecutive_intervals):
+    """Convert consecutive intervals to standard intervals from root.
+    
+    Args:
+        consecutive_intervals: List of intervals between consecutive notes
+        
+    Returns:
+        List of intervals from the root note
     """
-    Checks if a MIDI pitch is part of a given chord token.
+    if not consecutive_intervals:
+        return [0]  # Just the root
+        
+    standard_intervals = [0]  # Start with root
+    current_sum = 0
+    for interval in consecutive_intervals:
+        current_sum += interval
+        standard_intervals.append(current_sum)
+    
+    return standard_intervals
+
+def check_harmony(melody_note, chord_info):
+    """Check if a melody note is in harmony with a chord.
+    
+    Args:
+        melody_note (int): MIDI pitch number of the melody note
+        chord_info (dict): Dictionary containing chord information
+        
+    Returns:
+        bool: True if the melody note is in harmony with the chord
     """
-    token_to_chord = tokenizer_info.get("token_to_chord", {})
+    if melody_note == -1:  # Rest
+        return True
+        
+    # Extract chord information
+    root = chord_info.get('root_pitch_class', 0)
+    consecutive_intervals = chord_info.get('root_position_intervals', [])
     
-    # JSON saves integer keys as strings, so we must convert
-    chord_token_str = str(chord_token)
-
-    if chord_token_str not in token_to_chord:
-        return False # Unknown chord token
-
-    # The structure from tokenizer is [root, [intervals], inversion, is_onset]
-    chord_info = token_to_chord[chord_token_str]
-    root_pc = chord_info[0]
-    intervals = chord_info[1]
+    # Convert to standard intervals
+    standard_intervals = convert_to_standard_intervals(consecutive_intervals)
     
-    # A chord is defined by its root pitch class and intervals
-    chord_pitch_classes = {(root_pc + interval) % 12 for interval in intervals}
-    chord_pitch_classes.add(root_pc)
-
-    # Convert the melody MIDI pitch to a pitch class
-    melody_pitch_class = pitch % 12
+    # Get melody pitch class
+    melody_pitch_class = melody_note % 12
     
-    return melody_pitch_class in chord_pitch_classes
+    # Get all chord notes (including root)
+    chord_notes = {(root + interval) % 12 for interval in standard_intervals}
+    
+    return melody_pitch_class in chord_notes
 
+def calculate_harmony_ratio(melody_sequence, chord_sequence, tokenizer_info):
+    """Calculate the ratio of melody notes that are in harmony with their corresponding chords.
+    
+    Args:
+        melody_sequence (list): List of melody note tokens
+        chord_sequence (list): List of chord tokens
+        tokenizer_info (dict): Tokenizer information dictionary
+        
+    Returns:
+        float: Ratio of melody notes that are in harmony with their chords
+    """
+    total_notes = 0
+    harmonic_notes = 0
+    
+    token_to_chord = tokenizer_info['token_to_chord']
+    token_to_midi = tokenizer_info['token_to_midi']
+    
+    for melody_token, chord_token in zip(melody_sequence, chord_sequence):
+        # Skip if either token is a special token
+        if melody_token < 5 or chord_token < 128:  # Using constants from config
+            continue
+            
+        # Convert melody token to MIDI note
+        melody_note = token_to_midi.get(str(melody_token), -1)
+        
+        # Get chord information
+        chord_info = token_to_chord.get(str(chord_token))
+        if not chord_info:
+            continue
+            
+        total_notes += 1
+        if check_harmony(melody_note, chord_info):
+            harmonic_notes += 1
+            
+    return harmonic_notes / total_notes if total_notes > 0 else 0.0
 
 def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict) -> Dict:
     """
@@ -102,7 +161,7 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
     
     # Get silence token values from config
     melody_silence_token = SILENCE_TOKEN
-    chord_silence_token = tokenizer_info.get("chord_token_start", CHORD_TOKEN_START)
+    chord_silence_token = tokenizer_info.get("chord_silence_token", CHORD_TOKEN_START - 1)
 
     for data in parsed_data:
         for note in data['notes']:
@@ -116,7 +175,8 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
             # Per paper, exclude frames where either is silence
             if active_chord and note['pitch'] != melody_silence_token and active_chord['token'] != chord_silence_token:
                 total_notes += 1
-                if is_pitch_in_chord(note['pitch'], active_chord['token'], tokenizer_info):
+                chord_info = tokenizer_info['token_to_chord'][str(active_chord['token'])]
+                if check_harmony(note['pitch'], chord_info):
                     in_harmony_count += 1
     
     ratio = (in_harmony_count / total_notes) if total_notes > 0 else 0
