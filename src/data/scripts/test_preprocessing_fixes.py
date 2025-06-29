@@ -102,9 +102,16 @@ def test_tokenizer_ranges():
         onset_token, hold_token = preprocessor.melody_tokenizer.encode_midi_note(midi)
         print(f"  MIDI {midi}: onset={onset_token}, hold={hold_token}")
         
-        # Verify ranges
-        assert 1 <= onset_token < MIDI_HOLD_START, f"Onset token {onset_token} out of range"
-        assert MIDI_HOLD_START <= hold_token < MELODY_VOCAB_SIZE, f"Hold token {hold_token} out of range"
+        # Verify ranges - using new tokenization scheme
+        # Onset tokens should be even indices after MELODY_ONSET_HOLD_START
+        assert onset_token >= MELODY_ONSET_HOLD_START and (onset_token - MELODY_ONSET_HOLD_START) % 2 == 0, \
+            f"Onset token {onset_token} not a valid onset token"
+        # Hold tokens should be odd indices after MELODY_ONSET_HOLD_START
+        assert onset_token >= MELODY_ONSET_HOLD_START and (hold_token - MELODY_ONSET_HOLD_START) % 2 == 1, \
+            f"Hold token {hold_token} not a valid hold token"
+        # Both tokens should be within melody vocab range
+        assert onset_token < MELODY_VOCAB_SIZE and hold_token < MELODY_VOCAB_SIZE, \
+            f"Tokens {onset_token}, {hold_token} outside melody vocab range [0, {MELODY_VOCAB_SIZE})"
     
     # Test out-of-range MIDI
     silence_onset, silence_hold = preprocessor.melody_tokenizer.encode_midi_note(-100)

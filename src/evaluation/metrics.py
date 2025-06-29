@@ -11,8 +11,7 @@ from scipy.stats import entropy, wasserstein_distance
 from src.config.tokenization_config import (
     SILENCE_TOKEN,
     MELODY_VOCAB_SIZE,
-    MIDI_ONSET_START,
-    MIDI_HOLD_START,
+    MELODY_ONSET_HOLD_START,
     MAX_MIDI_NOTE,
     CHORD_TOKEN_START,
 )
@@ -31,11 +30,13 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
         for time_step, token in enumerate(seq):
             # --- Melody Parsing ---
             if token < CHORD_TOKEN_START:
-                is_onset = MIDI_ONSET_START <= token < MIDI_HOLD_START
+                # In the new tokenization, onset tokens are even indices after MELODY_ONSET_HOLD_START
+                is_onset = token >= MELODY_ONSET_HOLD_START and (token - MELODY_ONSET_HOLD_START) % 2 == 0
                 is_silence = token == SILENCE_TOKEN
 
                 if is_onset:
-                    pitch = token - MIDI_ONSET_START
+                    # Convert token to pitch index by removing offset and dividing by 2
+                    pitch = (token - MELODY_ONSET_HOLD_START) // 2
                     # If a note was already playing, end it.
                     if active_note:
                         notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': time_step})
