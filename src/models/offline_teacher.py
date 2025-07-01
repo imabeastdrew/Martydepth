@@ -248,9 +248,18 @@ class OfflineTeacherModel(nn.Module):
     
     @staticmethod
     def create_causal_mask(seq_length: int, device: torch.device) -> torch.Tensor:
-        """Create a causal mask for the decoder."""
-        mask = torch.triu(torch.ones(seq_length, seq_length, device=device), diagonal=1)
-        return mask.masked_fill(mask == 1, float('-inf'))
+        """
+        Create causal mask for decoder self-attention.
+        PyTorch expects additive attention mask where -inf means no attention.
+        """
+        # Create causal mask [seq_length, seq_length]
+        mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1).bool()
+        mask = mask.to(device)
+        
+        # Convert to additive attention mask
+        causal_mask = torch.zeros_like(mask, dtype=torch.float)
+        causal_mask.masked_fill_(mask, float('-inf'))
+        return causal_mask
     
     def forward(
         self,
@@ -260,46 +269,42 @@ class OfflineTeacherModel(nn.Module):
         chord_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Forward pass for the teacher model.
+        Forward pass through the model.
         
         Args:
-            melody_tokens: [batch, melody_seq]
-            chord_tokens: [batch, chord_seq]
-            melody_mask: [batch, melody_seq] - Padding mask for melody
-            chord_mask: [batch, chord_seq] - Padding mask for chords
-        
-        Returns:
-            logits: [batch, chord_seq, chord_vocab_size]
+            melody_tokens: [batch, seq] - melody token sequence
+            chord_tokens: [batch, seq] - chord token sequence
+            melody_mask: [batch, seq] - True for padding tokens in melody
+            chord_mask: [batch, seq] - True for padding tokens in chords
         """
-        # 1. Get embeddings
-        melody_embed = self.embeddings.encode_melody(melody_tokens)
-        chord_embed = self.embeddings.encode_chords(chord_tokens)
+        # Get embeddings
+        melody_embeds = self.embeddings.encode_melody(melody_tokens)  # [batch, seq, embed_dim]
+        chord_embeds = self.embeddings.encode_chords(chord_tokens)    # [batch, seq, embed_dim]
         
-        # 2. Create causal mask for decoder and convert to float
-        causal_mask = self.create_causal_mask(chord_tokens.size(1), device=chord_tokens.device)
-        causal_mask = causal_mask.to(dtype=torch.float32)  # Convert to float
+        # Create causal mask for decoder
+        seq_length = chord_tokens.size(1)
+        causal_mask = self.create_causal_mask(seq_length, chord_tokens.device)
         
-        # 3. Convert padding masks to float and invert (1 = keep, 0 = mask)
-        if melody_mask is not None:
-            melody_mask = melody_mask.to(dtype=torch.float32)
-            melody_mask = melody_mask * -1e9  # Convert True to -inf for masking
+        # Convert padding masks to PyTorch format (True blocks attention)
+        src_key_padding_mask = melody_mask if melody_mask is not None else None
+        tgt_key_padding_mask = chord_mask if chord_mask is not None else None
         
-        if chord_mask is not None:
-            chord_mask = chord_mask.to(dtype=torch.float32)
-            chord_mask = chord_mask * -1e9  # Convert True to -inf for masking
-        
-        # 4. Pass through transformer
+        # Forward through transformer
+        # Note: PyTorch expects tgt_mask to be additive (not multiplicative)
+        # and src/tgt_key_padding_mask where True means to block attention
         output = self.transformer(
-            src=melody_embed,
-            tgt=chord_embed,
-            tgt_mask=causal_mask,
-            src_key_padding_mask=melody_mask,
-            tgt_key_padding_mask=chord_mask,
+            src=melody_embeds,                      # Encoder input (melody)
+            tgt=chord_embeds,                       # Decoder input (chords)
+            src_mask=None,                          # No causal mask for encoder
+            tgt_mask=causal_mask,                   # Causal mask for decoder
+            memory_mask=None,                       # No mask for cross-attention
+            src_key_padding_mask=src_key_padding_mask,  # Padding mask for encoder
+            tgt_key_padding_mask=tgt_key_padding_mask,  # Padding mask for decoder
+            memory_key_padding_mask=src_key_padding_mask  # Use encoder padding mask for cross-attention
         )
         
-        # 5. Project to vocabulary
-        logits = self.output_head(output)
-        
+        # Project to vocabulary
+        logits = self.output_head(output)  # [batch, seq, chord_vocab_size]
         return logits
 
 
