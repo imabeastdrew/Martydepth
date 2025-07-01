@@ -15,7 +15,6 @@ from src.config.tokenization_config import (
     MAX_MIDI_NOTE,
     CHORD_TOKEN_START,
 )
-from src.data.preprocess_frames import get_complete_chord_intervals
 
 def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
     """
