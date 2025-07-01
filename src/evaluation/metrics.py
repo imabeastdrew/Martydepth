@@ -14,7 +14,6 @@ from src.config.tokenization_config import (
     MELODY_ONSET_HOLD_START,
     MAX_MIDI_NOTE,
     CHORD_TOKEN_START,
-    CHORD_TYPES,
 )
 from src.data.preprocess_frames import get_complete_chord_intervals
 
