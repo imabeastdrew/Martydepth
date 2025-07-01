@@ -14,8 +14,8 @@ from src.config.tokenization_config import (
     MELODY_ONSET_HOLD_START,
     MAX_MIDI_NOTE,
     CHORD_TOKEN_START,
-    token_to_midi_and_type,
 )
+from src.data.preprocess_frames import MIDITokenizer
 
 def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
     """
@@ -23,6 +23,8 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
     For now, this is a simplified parser.
     """
     parsed_data = []
+    melody_tokenizer = MIDITokenizer()  # Create tokenizer instance
+    
     for seq in sequences:
         notes = []
         chords = []
@@ -32,11 +34,11 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
         for time_step, token in enumerate(seq):
             # --- Melody Parsing ---
             if token < CHORD_TOKEN_START:
-                # Get MIDI note and onset/hold info
-                midi_note, is_onset = token_to_midi_and_type(token)
+                # Get MIDI note and onset/hold info using MIDITokenizer
+                midi_note, is_onset = melody_tokenizer.decode_token(token)
                 is_silence = token == SILENCE_TOKEN
 
-                if is_onset:
+                if midi_note is not None and is_onset:
                     # If a note was already playing, end it.
                     if active_note:
                         notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': time_step})
