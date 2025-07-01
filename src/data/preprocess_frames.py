@@ -416,6 +416,18 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
         with open(output_dir / sequence_filename, 'wb') as f:
             pickle.dump(seq, f)
 
+    # Build token_to_chord mapping
+    token_to_chord = {}
+    for token in range(chord_tokenizer.token_offset, chord_tokenizer.token_offset + chord_tokenizer.get_vocab_size()):
+        chord_info = chord_tokenizer.decode_token(token)
+        if chord_info is not None:
+            token_to_chord[str(token)] = {
+                'root_pitch_class': chord_info['root_pitch_class'],
+                'root_position_intervals': chord_info['root_position_intervals'],
+                'inversion': chord_info['inversion'],
+                'is_hold': chord_info['is_hold']
+            }
+
     tokenizer_info = {
         "melody_vocab_size": MELODY_VOCAB_SIZE,
         "chord_vocab_size": chord_tokenizer.get_vocab_size(),
@@ -425,6 +437,7 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
         "chord_silence_token": CHORD_SILENCE_TOKEN,
         "midi_range": {"min": MIN_MIDI_NOTE, "max": MAX_MIDI_NOTE},
         "unique_midi_notes": UNIQUE_MIDI_NOTES,
+        "token_to_chord": token_to_chord
     }
 
     with open(output_dir / 'tokenizer_info.json', 'w') as f:

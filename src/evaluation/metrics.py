@@ -14,6 +14,7 @@ from src.config.tokenization_config import (
     MELODY_ONSET_HOLD_START,
     MAX_MIDI_NOTE,
     CHORD_TOKEN_START,
+    token_to_midi_and_type,
 )
 
 def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
@@ -26,22 +27,21 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
         notes = []
         chords = []
         active_note = None  # For monophonic melody, only one note can be active
+        active_chord = None  # Track current chord
 
         for time_step, token in enumerate(seq):
             # --- Melody Parsing ---
             if token < CHORD_TOKEN_START:
-                # In the new tokenization, onset tokens are even indices after MELODY_ONSET_HOLD_START
-                is_onset = token >= MELODY_ONSET_HOLD_START and (token - MELODY_ONSET_HOLD_START) % 2 == 0
+                # Get MIDI note and onset/hold info
+                midi_note, is_onset = token_to_midi_and_type(token)
                 is_silence = token == SILENCE_TOKEN
 
                 if is_onset:
-                    # Convert token to pitch index by removing offset and dividing by 2
-                    pitch = (token - MELODY_ONSET_HOLD_START) // 2
                     # If a note was already playing, end it.
                     if active_note:
                         notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': time_step})
                     # Start the new note
-                    active_note = {'pitch': pitch, 'start': time_step}
+                    active_note = {'pitch': midi_note, 'start': time_step}
                 elif is_silence:
                     if active_note:
                         notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': time_step})
@@ -49,17 +49,19 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
             
             # --- Chord Parsing ---
             else:
-                if token >= CHORD_TOKEN_START:
-                    if not chords or chords[-1]['token'] != token:
-                        if chords:
-                            chords[-1]['end'] = time_step
-                        chords.append({'token': token, 'start': time_step, 'end': -1})
+                token_str = str(token)
+                if token_str in tokenizer_info['token_to_chord']:
+                    chord_info = tokenizer_info['token_to_chord'][token_str]
+                    if not chord_info['is_hold']:  # Only process onset tokens
+                        if active_chord:
+                            chords.append({'token': active_chord['token'], 'start': active_chord['start'], 'end': time_step})
+                        active_chord = {'token': token, 'start': time_step}
 
         # Finalize any open notes/chords
         if active_note:
             notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': len(seq)})
-        if chords:
-            chords[-1]['end'] = len(seq)
+        if active_chord:
+            chords.append({'token': active_chord['token'], 'start': active_chord['start'], 'end': len(seq)})
             
         parsed_data.append({'notes': notes, 'chords': chords})
     return parsed_data
@@ -84,35 +86,26 @@ def convert_to_standard_intervals(consecutive_intervals):
     
     return standard_intervals
 
-def check_harmony(melody_note, chord_info):
-    """Check if a melody note is in harmony with a chord.
+def check_harmony(pitch: int, chord_info: Dict) -> bool:
+    """Check if a pitch is part of a chord."""
+    # Get chord info
+    root = chord_info['root_pitch_class']
+    intervals = chord_info['root_position_intervals']
     
-    Args:
-        melody_note (int): MIDI pitch number of the melody note
-        chord_info (dict): Dictionary containing chord information with:
-            - root_pitch_class: Root note of the chord (0-11)
-            - root_position_intervals: List of consecutive intervals
-        
-    Returns:
-        bool: True if the melody note is in harmony with the chord
-    """
-    if melody_note == -1:  # Rest
-        return True
-        
-    # Extract chord information
-    root = chord_info.get('root_pitch_class', 0)
-    consecutive_intervals = chord_info.get('root_position_intervals', [])
+    # Convert consecutive intervals to standard intervals from root
+    standard_intervals = [0]  # Start with root
+    current_sum = 0
+    for interval in intervals:
+        current_sum += interval
+        standard_intervals.append(current_sum)
     
-    # Convert to standard intervals
-    standard_intervals = convert_to_standard_intervals(consecutive_intervals)
+    # Convert intervals to pitch classes
+    chord_pitch_classes = {(root + interval) % 12 for interval in standard_intervals}
     
-    # Get melody pitch class (0-11)
-    melody_pitch_class = melody_note % 12
+    # Convert melody pitch to pitch class
+    melody_pitch_class = pitch % 12
     
-    # Get all chord notes (including root)
-    chord_notes = {(root + interval) % 12 for interval in standard_intervals}
-    
-    return melody_pitch_class in chord_notes
+    return melody_pitch_class in chord_pitch_classes
 
 def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict) -> Dict:
     """
@@ -131,6 +124,7 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
     # Get silence token values from config
     melody_silence_token = SILENCE_TOKEN
     chord_silence_token = tokenizer_info.get("chord_silence_token", CHORD_TOKEN_START - 1)
+    token_to_chord = tokenizer_info.get("token_to_chord", {})
 
     for data in parsed_data:
         for note in data['notes']:
@@ -146,7 +140,14 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
                 continue
                 
             # Get chord info and check harmony
-            chord_info = tokenizer_info['token_to_chord'][str(active_chord['token'])]
+            chord_token_str = str(active_chord['token'])
+            if chord_token_str not in token_to_chord:
+                continue
+                
+            chord_info = token_to_chord[chord_token_str]
+            if chord_info['is_hold']:  # Skip hold tokens
+                continue
+                
             total_notes += 1
             if check_harmony(note['pitch'], chord_info):
                 in_harmony_count += 1
@@ -171,18 +172,29 @@ def calculate_synchronization_metrics(sequences: List[np.ndarray], tokenizer_inf
         if not data['notes'] or not data['chords']:
             continue
         
-        note_onsets = np.array(sorted([n['start'] for n in data['notes']]))
-        chord_onsets = np.array(sorted([c['start'] for c in data['chords']]))
-
+        # Only consider onset times
+        note_onsets = [n['start'] for n in data['notes']]
+        
+        # Get chord onsets, filtering out hold tokens and silence
+        chord_onsets = []
+        for c in data['chords']:
+            token_str = str(c['token'])
+            if token_str in tokenizer_info['token_to_chord']:
+                chord_info = tokenizer_info['token_to_chord'][token_str]
+                if not chord_info['is_hold']:
+                    chord_onsets.append(c['start'])
+        
+        if not note_onsets or not chord_onsets:
+            continue
+            
+        # For each note onset, find the closest chord onset
         for n_onset in note_onsets:
             # Find the closest chord onset
-            if len(chord_onsets) > 0:
-                distances = np.abs(chord_onsets - n_onset)
-                onset_intervals.append(np.min(distances))
+            distances = [abs(c_onset - n_onset) for c_onset in chord_onsets]
+            if distances:
+                onset_intervals.append(min(distances))
 
     avg_interval = np.mean(onset_intervals) if onset_intervals else 0
-    # The paper multiplies by 10^-3, which seems odd for frame differences.
-    # I will just return the average frame difference.
     return {"delta_chord_note_onset_interval": avg_interval}
 
 
