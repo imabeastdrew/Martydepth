@@ -91,7 +91,9 @@ def check_harmony(melody_note, chord_info):
     
     Args:
         melody_note (int): MIDI pitch number of the melody note
-        chord_info (dict): Dictionary containing chord information
+        chord_info (dict): Dictionary containing chord information with:
+            - root_pitch_class: Root note of the chord (0-11)
+            - root_position_intervals: List of consecutive intervals
         
     Returns:
         bool: True if the melody note is in harmony with the chord
@@ -106,7 +108,7 @@ def check_harmony(melody_note, chord_info):
     # Convert to standard intervals
     standard_intervals = convert_to_standard_intervals(consecutive_intervals)
     
-    # Get melody pitch class
+    # Get melody pitch class (0-11)
     melody_pitch_class = melody_note % 12
     
     # Get all chord notes (including root)
@@ -114,46 +116,15 @@ def check_harmony(melody_note, chord_info):
     
     return melody_pitch_class in chord_notes
 
-def calculate_harmony_ratio(melody_sequence, chord_sequence, tokenizer_info):
-    """Calculate the ratio of melody notes that are in harmony with their corresponding chords.
-    
-    Args:
-        melody_sequence (list): List of melody note tokens
-        chord_sequence (list): List of chord tokens
-        tokenizer_info (dict): Tokenizer information dictionary
-        
-    Returns:
-        float: Ratio of melody notes that are in harmony with their chords
-    """
-    total_notes = 0
-    harmonic_notes = 0
-    
-    token_to_chord = tokenizer_info['token_to_chord']
-    token_to_midi = tokenizer_info['token_to_midi']
-    
-    for melody_token, chord_token in zip(melody_sequence, chord_sequence):
-        # Skip if either token is a special token
-        if melody_token < 5 or chord_token < 128:  # Using constants from config
-            continue
-            
-        # Convert melody token to MIDI note
-        melody_note = token_to_midi.get(str(melody_token), -1)
-        
-        # Get chord information
-        chord_info = token_to_chord.get(str(chord_token))
-        if not chord_info:
-            continue
-            
-        total_notes += 1
-        if check_harmony(melody_note, chord_info):
-            harmonic_notes += 1
-            
-    return harmonic_notes / total_notes if total_notes > 0 else 0.0
-
 def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict) -> Dict:
     """
     Calculates harmony metrics.
     - Melody Note in Chord Ratio
+    
+    The metric follows the paper's methodology:
+    1. Only considers frames where both melody and chord are active (not silence)
+    2. Checks if the melody note is part of the chord's pitch classes
+    3. Reports percentage of in-harmony notes
     """
     parsed_data = parse_sequences(sequences, tokenizer_info)
     in_harmony_count = 0
@@ -172,15 +143,22 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
                     active_chord = chord
                     break
             
-            # Per paper, exclude frames where either is silence
-            if active_chord and note['pitch'] != melody_silence_token and active_chord['token'] != chord_silence_token:
-                total_notes += 1
-                chord_info = tokenizer_info['token_to_chord'][str(active_chord['token'])]
-                if check_harmony(note['pitch'], chord_info):
-                    in_harmony_count += 1
+            # Skip if either is silence
+            if not active_chord or note['pitch'] == melody_silence_token or active_chord['token'] == chord_silence_token:
+                continue
+                
+            # Get chord info and check harmony
+            chord_info = tokenizer_info['token_to_chord'][str(active_chord['token'])]
+            total_notes += 1
+            if check_harmony(note['pitch'], chord_info):
+                in_harmony_count += 1
     
     ratio = (in_harmony_count / total_notes) if total_notes > 0 else 0
-    return {"melody_note_in_chord_ratio": ratio * 100}
+    return {
+        "melody_note_in_chord_ratio": ratio * 100,  # Convert to percentage
+        "total_notes_analyzed": total_notes,
+        "in_harmony_notes": in_harmony_count
+    }
 
 
 def calculate_synchronization_metrics(sequences: List[np.ndarray], tokenizer_info: Dict) -> Dict:

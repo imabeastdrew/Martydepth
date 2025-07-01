@@ -32,15 +32,14 @@ def is_pitch_in_chord(pitch: int, chord_token: int, tokenizer_info: dict) -> boo
     if chord_token_str not in token_to_chord:
         return False # Unknown chord token
 
-    # The structure from tokenizer is [root, [intervals], inversion, is_onset]
+    # Get chord info dictionary
     chord_info = token_to_chord[chord_token_str]
-    root_pc = chord_info[0]
-    intervals = chord_info[1]
+    root_pc = chord_info['root_pitch_class']
+    intervals = chord_info['standard_intervals']  # Use standard intervals from root
     
     # A chord is defined by its root pitch class and intervals
     chord_pitch_classes = {(root_pc + interval) % 12 for interval in intervals}
-    chord_pitch_classes.add(root_pc)
-
+    
     # Convert the melody MIDI pitch to a pitch class
     melody_pitch_class = pitch % 12
     
