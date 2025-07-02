@@ -32,7 +32,7 @@ def main(args):
     print("Model, tokenizer, and config loaded successfully.")
 
     # Dataloader
-    max_seq_length = config.get('max_seq_length') or config.get('max_sequence_length') or 512
+    max_seq_length = config.get('max_seq_length') or config.get('max_sequence_length') or 256
     dataloader, _ = create_dataloader(
         data_dir=Path(args.data_dir),
         split=args.split,

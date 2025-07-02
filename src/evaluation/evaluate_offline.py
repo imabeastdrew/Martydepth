@@ -19,7 +19,7 @@ from src.evaluation.metrics import (
     calculate_harmony_metrics,
     calculate_emd_metrics,
 )
-from src.config.tokenization_config import CHORD_SILENCE_TOKEN, CHORD_TOKEN_START
+from src.config.tokenization_config import CHORD_SILENCE_TOKEN, CHORD_TOKEN_START, PAD_TOKEN
 
 def log_results_to_wandb(args, metrics, sequences, tokenizer_info):
     """Logs evaluation results and generated samples to W&B."""
@@ -76,7 +76,8 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
 
         # Handle different possible key names for max_seq_length
-        max_seq_length = config.get('max_seq_length') or config.get('max_sequence_length') or 512
+        max_seq_length = config.get('max_seq_length') or config.get('max_sequence_length') or 256
+        print(f"Using max_seq_length: {max_seq_length}")
 
         model = OfflineTeacherModel(
             melody_vocab_size=config['melody_vocab_size'],
@@ -84,7 +85,9 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
             embed_dim=config['embed_dim'],
             num_heads=config['num_heads'],
             num_layers=config['num_layers'],
-            max_seq_length=max_seq_length
+            dropout=config['dropout'],
+            max_seq_length=max_seq_length,
+            pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
         ).to(device)
         
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
