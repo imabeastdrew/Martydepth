@@ -232,54 +232,62 @@ def calculate_emd_metrics(generated_sequences: List[np.ndarray],
                           ground_truth_sequences: List[np.ndarray], 
                           tokenizer_info: Dict) -> Dict:
     """
-    Calculates the Earth Mover's Distance (EMD) for rhythm and synchronization
-    metrics, comparing generated sequences to ground truth sequences.
+    Calculates the Earth Mover's Distance (EMD) for onset intervals and entropy for chord lengths.
+    
+    Following paper's methodology:
+    - Onset intervals: bins [0, 1, 2, ..., 16, 17, ∞], EMD × 10^3
+    - Chord lengths: bins [0, 1, 2, ..., 32, 33, ∞], calculate entropy in nats
     """
-    # Parse both generated and ground truth sequences
+    # Parse sequences
     gen_parsed = parse_sequences(generated_sequences, tokenizer_info)
     gt_parsed = parse_sequences(ground_truth_sequences, tokenizer_info)
 
     # --- Onset Interval EMD ---
-    gen_onset_intervals = []
-    for data in gen_parsed:
-        if not data['notes'] or not data['chords']: continue
-        note_onsets = np.array(sorted([n['start'] for n in data['notes']]))
-        chord_onsets = np.array(sorted([c['start'] for c in data['chords']]))
-        for n_onset in note_onsets:
-            if len(chord_onsets) > 0:
-                gen_onset_intervals.append(np.min(np.abs(chord_onsets - n_onset)))
+    def get_onset_intervals(parsed_data):
+        intervals = []
+        for data in parsed_data:
+            if not data['notes'] or not data['chords']: 
+                continue
+            note_onsets = np.array([n['start'] for n in data['notes']])
+            chord_onsets = np.array([c['start'] for c in data['chords']])
+            for n_onset in note_onsets:
+                if len(chord_onsets) > 0:
+                    # Find minimum distance to any chord onset
+                    intervals.append(np.min(np.abs(chord_onsets - n_onset)))
+        return np.array(intervals)
 
-    gt_onset_intervals = []
-    for data in gt_parsed:
-        if not data['notes'] or not data['chords']: continue
-        note_onsets = np.array(sorted([n['start'] for n in data['notes']]))
-        chord_onsets = np.array(sorted([c['start'] for c in data['chords']]))
-        for n_onset in note_onsets:
-            if len(chord_onsets) > 0:
-                gt_onset_intervals.append(np.min(np.abs(chord_onsets - n_onset)))
+    # Get intervals for both sets
+    gen_intervals = get_onset_intervals(gen_parsed)
+    gt_intervals = get_onset_intervals(gt_parsed)
 
-    # Create histograms using specified bins
-    onset_bins = np.arange(18) # 0, 1, ..., 17
-    gen_onset_hist, _ = np.histogram(gen_onset_intervals, bins=onset_bins, density=True)
-    gt_onset_hist, _ = np.histogram(gt_onset_intervals, bins=onset_bins, density=True)
+    # Create histograms with paper's binning
+    onset_bins = list(range(18)) + [np.inf]  # [0,1,...,17,inf]
+    gen_hist, _ = np.histogram(gen_intervals, bins=onset_bins, density=True)
+    gt_hist, _ = np.histogram(gt_intervals, bins=onset_bins, density=True)
 
-    # Calculate EMD for onset intervals
-    onset_emd = wasserstein_distance(gen_onset_hist, gt_onset_hist)
+    # Calculate EMD and multiply by 10^3 as per paper
+    onset_emd = wasserstein_distance(gen_hist, gt_hist) * (10**3)
 
-    # --- Chord Length EMD ---
-    gen_chord_lengths = [c['end'] - c['start'] for d in gen_parsed for c in d['chords'] if c['end'] > c['start']]
-    gt_chord_lengths = [c['end'] - c['start'] for d in gt_parsed for c in d['chords'] if c['end'] > c['start']]
+    # --- Chord Length Entropy ---
+    def get_chord_lengths(parsed_data):
+        lengths = []
+        for data in parsed_data:
+            for chord in data['chords']:
+                length = chord['end'] - chord['start']
+                if length > 0:  # Skip zero-length chords
+                    lengths.append(length)
+        return np.array(lengths)
 
-    # Create histograms using specified bins
-    length_bins = np.arange(34) # 0, 1, ..., 33
-    gen_length_hist, _ = np.histogram(gen_chord_lengths, bins=length_bins, density=True)
-    gt_length_hist, _ = np.histogram(gt_chord_lengths, bins=length_bins, density=True)
-
-    # Calculate EMD for chord lengths
-    length_emd = wasserstein_distance(gen_length_hist, gt_length_hist)
+    # Calculate chord length entropy (in nats)
+    gen_lengths = get_chord_lengths(gen_parsed)
+    # Create histogram with paper's binning
+    length_bins = list(range(34)) + [np.inf]  # [0,1,...,33,inf]
+    hist, _ = np.histogram(gen_lengths, bins=length_bins, density=True)
+    # Remove zero probabilities before calculating entropy
+    hist = hist[hist > 0]
+    chord_length_entropy = -np.sum(hist * np.log(hist))  # Natural log for nats
     
-    # Paper multiplies onset EMD by 1000
     return {
-        "onset_interval_emd": onset_emd * 1000,
-        "chord_length_emd": length_emd
+        "onset_interval_emd": onset_emd,
+        "chord_length_entropy": chord_length_entropy
     } 
