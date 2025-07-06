@@ -117,11 +117,11 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
     The metric follows the paper's methodology:
     1. Only considers frames where both melody and chord are active (not silence)
     2. Checks if the melody note is part of the chord's pitch classes
-    3. Reports percentage of in-harmony notes
+    3. Reports percentage of in-harmony frames
     """
     parsed_data = parse_sequences(sequences, tokenizer_info)
-    in_harmony_count = 0
-    total_notes = 0
+    in_harmony_frames = 0
+    total_frames = 0
     
     # Get silence token values from config
     melody_silence_token = SILENCE_TOKEN
@@ -130,35 +130,41 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
 
     for data in parsed_data:
         for note in data['notes']:
-            # Find active chord at note onset
-            active_chord = None
-            for chord in data['chords']:
-                if chord['start'] <= note['start'] < chord['end']:
-                    active_chord = chord
-                    break
-            
-            # Skip if either is silence
-            if not active_chord or note['pitch'] == melody_silence_token or active_chord['token'] == chord_silence_token:
+            # Skip silence notes
+            if note['pitch'] == melody_silence_token:
                 continue
                 
-            # Get chord info and check harmony
-            chord_token_str = str(active_chord['token'])
-            if chord_token_str not in token_to_chord:
-                continue
+            # For each frame in the note's duration
+            for frame in range(note['start'], note['end']):
+                # Find active chord at this frame
+                active_chord = None
+                for chord in data['chords']:
+                    if chord['start'] <= frame < chord['end']:
+                        active_chord = chord
+                        break
                 
-            chord_info = token_to_chord[chord_token_str]
-            if chord_info['is_hold']:  # Skip hold tokens
-                continue
-                
-            total_notes += 1
-            if check_harmony(note['pitch'], chord_info):
-                in_harmony_count += 1
+                # Skip if no chord or silence chord
+                if not active_chord or active_chord['token'] == chord_silence_token:
+                    continue
+                    
+                # Get chord info and check harmony
+                chord_token_str = str(active_chord['token'])
+                if chord_token_str not in token_to_chord:
+                    continue
+                    
+                chord_info = token_to_chord[chord_token_str]
+                if chord_info['is_hold']:  # Skip hold tokens
+                    continue
+                    
+                total_frames += 1
+                if check_harmony(note['pitch'], chord_info):
+                    in_harmony_frames += 1
     
-    ratio = (in_harmony_count / total_notes) if total_notes > 0 else 0
+    ratio = (in_harmony_frames / total_frames) if total_frames > 0 else 0
     return {
         "melody_note_in_chord_ratio": ratio * 100,  # Convert to percentage
-        "total_notes_analyzed": total_notes,
-        "in_harmony_notes": in_harmony_count
+        "total_frames_analyzed": total_frames,
+        "in_harmony_frames": in_harmony_frames
     }
 
 
