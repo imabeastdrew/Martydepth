@@ -431,7 +431,7 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
     tokenizer_info = {
         "melody_vocab_size": MELODY_VOCAB_SIZE,
         "chord_vocab_size": chord_tokenizer.get_vocab_size(),
-        "total_vocab_size": chord_tokenizer.get_vocab_size(),
+        "total_vocab_size": MELODY_VOCAB_SIZE + chord_tokenizer.get_vocab_size(),
         "pad_token_id": PAD_TOKEN,
         "chord_token_start": CHORD_TOKEN_START,
         "chord_silence_token": CHORD_SILENCE_TOKEN,
