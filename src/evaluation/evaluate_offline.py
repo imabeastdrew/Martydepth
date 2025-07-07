@@ -133,6 +133,7 @@ def generate_offline(model: OfflineTeacherModel,
     melody_vocab_size = tokenizer_info['melody_vocab_size']
     chord_token_start = melody_vocab_size + 1  # After PAD token
     chord_silence_token = chord_token_start  # First chord token is silence
+    chord_vocab_size = tokenizer_info['chord_vocab_size']
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
@@ -148,6 +149,7 @@ def generate_offline(model: OfflineTeacherModel,
             # Track current chord and its duration for each sequence in batch
             current_chords = torch.full((batch_size,), chord_silence_token, device=device)
             chord_durations = torch.zeros(batch_size, device=device)
+            is_hold_token = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
             for t in range(seq_length):
                 # Get model predictions
@@ -179,6 +181,15 @@ def generate_offline(model: OfflineTeacherModel,
                     # Update current chords and reset durations for changed sequences
                     current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)
                     chord_durations[need_new_chord] = 0
+                    is_hold_token[need_new_chord] = False
+                
+                # For continuing chords, use hold tokens
+                hold_mask = ~need_new_chord & ~is_hold_token
+                if hold_mask.any():
+                    # Convert onset tokens to hold tokens by adding chord_vocab_size/2
+                    hold_offset = chord_vocab_size // 2
+                    current_chords[hold_mask] = current_chords[hold_mask] + hold_offset
+                    is_hold_token[hold_mask] = True
                 
                 # Create next token tensor with current chords
                 next_chord_tokens = current_chords.unsqueeze(1)
