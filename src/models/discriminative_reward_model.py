@@ -9,10 +9,11 @@ from typing import Optional
 
 class DiscriminativeRewardModel(nn.Module):
     """
-    A Transformer-based model to discriminate between real and fake melody-chord pairs.
+    A multi-scale Transformer-based model to discriminate between real and fake melody-chord pairs.
     
     It processes an interleaved sequence of melody and chord tokens and outputs a
-    single logit indicating the probability that the pair is "real".
+    probability that the pair is "real". The model supports multi-scale evaluation
+    by processing fragments of different lengths using sliding windows with 50% overlap.
     """
     def __init__(self,
                  vocab_size: int,
@@ -21,12 +22,15 @@ class DiscriminativeRewardModel(nn.Module):
                  num_layers: int,
                  dropout: float,
                  max_seq_length: int,
-                 pad_token_id: int):
+                 pad_token_id: int,
+                 scale_factor: float = 1.0):  # Scale factor for fragment length
         super().__init__()
         
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(max_seq_length + 1, embed_dim)
         self.pad_token_id = pad_token_id
+        self.scale_factor = scale_factor
+        self.fragment_length = int(max_seq_length * scale_factor)
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
@@ -44,48 +48,106 @@ class DiscriminativeRewardModel(nn.Module):
         self.classification_head = nn.Linear(embed_dim, 1)
         self.max_seq_length = max_seq_length
 
-    def forward(self, tokens: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def get_sliding_windows(self, tokens: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass for the discriminative reward model.
+        Creates overlapping windows of tokens with 50% overlap.
         
         Args:
-            tokens (torch.Tensor): Interleaved melody-chord tokens [batch_size, seq_length]
-            padding_mask (Optional[torch.Tensor]): Padding mask.
-
+            tokens: Input tensor of shape [batch_size, seq_length]
+            
         Returns:
-            torch.Tensor: A single logit for each sequence in the batch [batch_size, 1].
+            Tensor of shape [batch_size * num_windows, fragment_length]
         """
         batch_size, seq_length = tokens.shape
+        stride = self.fragment_length // 2  # 50% overlap
         
-        if seq_length > self.max_seq_length:
-            raise ValueError(f"Sequence length {seq_length} exceeds max_seq_length {self.max_seq_length}")
+        # Calculate number of complete windows
+        num_windows = max(1, (seq_length - self.fragment_length) // stride + 1)
         
-        positions = torch.arange(seq_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
+        windows = []
+        for i in range(num_windows):
+            start_idx = i * stride
+            end_idx = start_idx + self.fragment_length
+            if end_idx > seq_length:
+                # Pad the last window if needed
+                window = tokens[:, start_idx:seq_length]
+                padding_size = self.fragment_length - window.size(1)
+                padding = torch.full((batch_size, padding_size), self.pad_token_id, 
+                                  device=tokens.device)
+                window = torch.cat([window, padding], dim=1)
+            else:
+                window = tokens[:, start_idx:end_idx]
+            windows.append(window)
+            
+        return torch.cat(windows, dim=0)
+
+    def forward(self, tokens: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forward pass using sliding windows for multi-scale evaluation.
         
-        token_embeds = self.token_embedding(tokens)
+        Args:
+            tokens: Interleaved melody-chord tokens [batch_size, seq_length]
+            padding_mask: Optional padding mask
+
+        Returns:
+            torch.Tensor: Logits for each window [batch_size * num_windows, 1]
+        """
+        # Create sliding windows
+        token_windows = self.get_sliding_windows(tokens)
+        if padding_mask is not None:
+            padding_windows = self.get_sliding_windows(padding_mask)
+        else:
+            padding_windows = None
+            
+        batch_size, window_length = token_windows.shape
+        positions = torch.arange(window_length, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
+        
+        token_embeds = self.token_embedding(token_windows)
         pos_embeds = self.position_embedding(positions)
         
         x = token_embeds + pos_embeds
         x = self.dropout(x)
         
         # Transformer encoding
-        x = self.transformer(x, src_key_padding_mask=padding_mask)
+        x = self.transformer(x, src_key_padding_mask=padding_windows)
         
-        # Use mean pooling over the sequence dimension to get a fixed-size representation
-        if padding_mask is not None:
-            # Adjust for padding to avoid bias
-            masked_x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+        # Use mean pooling over the sequence dimension
+        if padding_windows is not None:
+            masked_x = x.masked_fill(padding_windows.unsqueeze(-1), 0.0)
             sum_x = torch.sum(masked_x, dim=1)
-            num_non_padded = (~padding_mask).sum(dim=1).unsqueeze(-1)
+            num_non_padded = (~padding_windows).sum(dim=1).unsqueeze(-1)
             num_non_padded = num_non_padded.clamp(min=1)
             pooled_output = sum_x / num_non_padded
         else:
             pooled_output = torch.mean(x, dim=1)
             
-        # Get the final logit
-        logit = self.classification_head(pooled_output)
+        # Get logits for each window
+        logits = self.classification_head(pooled_output)
         
-        return logit
+        return logits
+
+    def get_reward(self, tokens: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates rewards for each window and aggregates them.
+        
+        Args:
+            tokens: Interleaved melody-chord tokens [batch_size, seq_length]
+            
+        Returns:
+            torch.Tensor: Aggregated rewards for each sequence in the batch [batch_size]
+        """
+        batch_size = tokens.shape[0]
+        logits = self.forward(tokens)
+        
+        # Apply sigmoid to get probabilities
+        probs = torch.sigmoid(logits)
+        
+        # Reshape to [batch_size, num_windows]
+        num_windows = probs.shape[0] // batch_size
+        probs = probs.view(batch_size, num_windows)
+        
+        # Average across windows to get final reward
+        return torch.mean(probs, dim=1)
 
 if __name__ == '__main__':
     # Test the model

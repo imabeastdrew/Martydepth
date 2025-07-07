@@ -91,35 +91,46 @@ def generate_online(model: OnlineTransformer,
                     tokenizer_info: Dict,
                     device: torch.device,
                     temperature: float = 1.0,
-                    top_k: int = 50) -> list:
+                    top_k: int = 50,
+                    wait_beats: int = 2) -> list:
     """
     Generate sequences by providing the melody and predicting the chords.
     This function is optimized to process entire batches at once.
-    Returns both the generated sequences and the corresponding ground truth sequences.
+    Implements wait-and-see behavior where the model can observe melody for a few beats
+    before starting to generate chords.
+    
+    Args:
+        model: The online transformer model
+        dataloader: Dataloader providing melody sequences
+        tokenizer_info: Dictionary containing tokenization information
+        device: Device to run generation on
+        temperature: Sampling temperature (higher = more random)
+        top_k: Number of top logits to sample from
+        wait_beats: Number of beats to wait before starting generation (1 beat = 4 frames)
+        
+    Returns:
+        Tuple of generated sequences and ground truth sequences
     """
     model.eval()
     generated_sequences = []
     ground_truth_sequences = []
 
     chord_start_token_idx = tokenizer_info['melody_vocab_size']
+    chord_silence_token = tokenizer_info.get('chord_silence_token', chord_start_token_idx)
+    frames_per_beat = 4  # Standard in our dataset
+    wait_frames = wait_beats * frames_per_beat
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating online sequences"):
-            # In 'online' mode, the dataloader provides an interleaved sequence.
-            # We only need the melody part as the prompt for generation.
-            # Melody tokens are at odd indices [c1, m1, c2, m2, ...]
-            # The input_tokens from the dataloader are the model inputs [c1, m1, ... cn-1, mn-1]
             input_tokens = batch['input_tokens'].to(device)
-            melody_tokens = input_tokens[:, 1::2] # Extract melody tokens
-
-            # The ground truth is the target tensor from the dataloader
+            melody_tokens = input_tokens[:, 1::2]  # Extract melody tokens
             ground_truth_sequences.extend(batch['target_tokens'].cpu().numpy())
 
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
 
-            # Start with a chord token prompt for the whole batch
-            generated_so_far = torch.full((batch_size, 1), chord_start_token_idx, dtype=torch.long, device=device)
+            # Start with silence tokens for the waiting period
+            generated_so_far = torch.full((batch_size, 1), chord_silence_token, dtype=torch.long, device=device)
 
             for t in range(seq_length):
                 # 1. Append the next ground truth melody token
@@ -129,13 +140,17 @@ def generate_online(model: OnlineTransformer,
                 # 2. Predict the next token (which should be a chord)
                 logits = model(generated_so_far)[:, -1, :] / temperature
                 
-                # Top-k filtering
-                if top_k > 0:
-                    top_k_logits, top_k_indices = torch.topk(logits, top_k)
-                    # Create a mask for values to keep
-                    mask = torch.full_like(logits, -float('inf'))
-                    mask.scatter_(1, top_k_indices, top_k_logits)
-                    logits = mask
+                # If we're still in the waiting period, force silence tokens
+                if t < wait_frames:
+                    logits = torch.full_like(logits, float('-inf'))
+                    logits[:, chord_silence_token] = 0.0
+                else:
+                    # Top-k filtering for normal generation
+                    if top_k > 0:
+                        top_k_logits, top_k_indices = torch.topk(logits, top_k)
+                        mask = torch.full_like(logits, float('-inf'))
+                        mask.scatter_(1, top_k_indices, top_k_logits)
+                        logits = mask
 
                 # Sample the next chord token
                 probs = torch.softmax(logits, dim=-1)
@@ -144,17 +159,8 @@ def generate_online(model: OnlineTransformer,
                 # 3. Append the generated chord token
                 generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
 
-            # --- DEBUGGING ---
-            print("\n--- DEBUG ---")
-            # We skip the first token of generated_so_far as it's the prompt
-            print(f"Sample generated sequence (first 20 tokens): {generated_so_far[0, 1:].cpu().numpy()[:20]}")
-            print(f"Sample ground truth sequence (first 20 tokens): {batch['target_tokens'][0].cpu().numpy()[:20]}")
-            print("-------------")
-            # --- END DEBUGGING ---
-
             # Collect results for the batch
-            # The final sequence will be [prompt, m1, c1, m2, c2, ...]
-            # The generated part for metrics should not include the initial prompt
+            # Skip the first token as it's just the initial silence
             for i in range(batch_size):
                 full_sequence = generated_so_far[i, 1:].cpu().numpy()
                 generated_sequences.append(full_sequence)

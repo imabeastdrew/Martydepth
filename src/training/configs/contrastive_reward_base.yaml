@@ -1,14 +1,18 @@
 # Configuration for Contrastive Reward Model Training
 
+# Model type
+model_type: "contrastive"
+
 # Data args
 data_dir: "data/interim"
-max_seq_length: 128
+max_seq_length: 256  # Maximum sequence length for full-scale model
 
 # Model args
 embed_dim: 512
 num_heads: 8
 num_layers: 6
 dropout: 0.1
+scale_factor: 1.0  # Scale factor for fragment length (1.0 = full length)
 
 # Training args
 epochs: 35

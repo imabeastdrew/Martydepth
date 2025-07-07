@@ -70,17 +70,15 @@ class Encoder(nn.Module):
 
 class ContrastiveRewardModel(nn.Module):
     """
-    Computes similarity between melody and chord sequences.
+    Multi-scale contrastive reward model that computes similarity between melody and chord sequences.
     
     The model consists of two identical transformer encoders, one for melody
     and one for chords. The encoders map their respective inputs to
     fixed-size embeddings. The reward (similarity) is the cosine
     similarity between these two embeddings.
     
-    The encoders are trained using a contrastive (InfoNCE) loss, which
-    maximizes the similarity for corresponding (positive) melody-chord
-    pairs from the same song and minimizes it for non-corresponding
-    (negative) pairs.
+    The model supports multi-scale evaluation by processing fragments of different lengths
+    using sliding windows with 50% overlap.
     """
     def __init__(self,
                  melody_vocab_size: int,
@@ -90,10 +88,13 @@ class ContrastiveRewardModel(nn.Module):
                  num_layers: int,
                  dropout: float,
                  max_seq_length: int,
-                 pad_token_id: int):
+                 pad_token_id: int,
+                 scale_factor: float = 1.0):  # Scale factor for fragment length
         super().__init__()
         
         self.pad_token_id = pad_token_id
+        self.scale_factor = scale_factor
+        self.fragment_length = int(max_seq_length * scale_factor)
         
         self.melody_encoder = Encoder(
             vocab_size=melody_vocab_size,
@@ -115,35 +116,99 @@ class ContrastiveRewardModel(nn.Module):
             pad_token_id=pad_token_id
         )
 
+    def get_sliding_windows(self, tokens: torch.Tensor) -> torch.Tensor:
+        """
+        Creates overlapping windows of tokens with 50% overlap.
+        
+        Args:
+            tokens: Input tensor of shape [batch_size, seq_length]
+            
+        Returns:
+            Tensor of shape [batch_size * num_windows, fragment_length]
+        """
+        batch_size, seq_length = tokens.shape
+        stride = self.fragment_length // 2  # 50% overlap
+        
+        # Calculate number of complete windows
+        num_windows = max(1, (seq_length - self.fragment_length) // stride + 1)
+        
+        windows = []
+        for i in range(num_windows):
+            start_idx = i * stride
+            end_idx = start_idx + self.fragment_length
+            if end_idx > seq_length:
+                # Pad the last window if needed
+                window = tokens[:, start_idx:seq_length]
+                padding_size = self.fragment_length - window.size(1)
+                padding = torch.full((batch_size, padding_size), self.pad_token_id, 
+                                  device=tokens.device)
+                window = torch.cat([window, padding], dim=1)
+            else:
+                window = tokens[:, start_idx:end_idx]
+            windows.append(window)
+            
+        return torch.cat(windows, dim=0)
+
     def forward(self, 
                 melody_tokens: torch.Tensor, 
                 chord_tokens: torch.Tensor,
                 melody_padding_mask: Optional[torch.Tensor] = None,
                 chord_padding_mask: Optional[torch.Tensor] = None):
         """
-        Forward pass for the contrastive reward model.
+        Forward pass using sliding windows for multi-scale evaluation.
         
         Args:
-            melody_tokens (torch.Tensor): Tensor of melody tokens [batch_size, seq_length]
-            chord_tokens (torch.Tensor): Tensor of chord tokens [batch_size, seq_length]
-            melody_padding_mask (Optional[torch.Tensor]): Padding mask for melody tokens.
-            chord_padding_mask (Optional[torch.Tensor]): Padding mask for chord tokens.
+            melody_tokens: Tensor of melody tokens [batch_size, seq_length]
+            chord_tokens: Tensor of chord tokens [batch_size, seq_length]
+            melody_padding_mask: Optional padding mask for melody tokens
+            chord_padding_mask: Optional padding mask for chord tokens
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing melody and chord embeddings.
+            Tuple[torch.Tensor, torch.Tensor]: Melody and chord embeddings for each window
         """
-        melody_embedding = self.melody_encoder(melody_tokens, melody_padding_mask)
-        chord_embedding = self.chord_encoder(chord_tokens, chord_padding_mask)
+        # Create sliding windows
+        melody_windows = self.get_sliding_windows(melody_tokens)
+        chord_windows = self.get_sliding_windows(chord_tokens)
+        
+        if melody_padding_mask is not None:
+            melody_padding_windows = self.get_sliding_windows(melody_padding_mask)
+        else:
+            melody_padding_windows = None
+            
+        if chord_padding_mask is not None:
+            chord_padding_windows = self.get_sliding_windows(chord_padding_mask)
+        else:
+            chord_padding_windows = None
+        
+        # Get embeddings for each window
+        melody_embedding = self.melody_encoder(melody_windows, melody_padding_windows)
+        chord_embedding = self.chord_encoder(chord_windows, chord_padding_windows)
         
         return melody_embedding, chord_embedding
 
     def get_reward(self, melody_tokens: torch.Tensor, chord_tokens: torch.Tensor) -> torch.Tensor:
         """
-        Calculates the reward as the cosine similarity between melody and chord embeddings.
-        This is a convenience method for inference.
+        Calculates rewards for each window and aggregates them.
+        
+        Args:
+            melody_tokens: Tensor of melody tokens [batch_size, seq_length]
+            chord_tokens: Tensor of chord tokens [batch_size, seq_length]
+            
+        Returns:
+            torch.Tensor: Aggregated rewards for each sequence in the batch [batch_size]
         """
+        batch_size = melody_tokens.shape[0]
         melody_embedding, chord_embedding = self.forward(melody_tokens, chord_tokens)
-        return F.cosine_similarity(melody_embedding, chord_embedding, dim=-1)
+        
+        # Calculate cosine similarity for each window
+        similarities = F.cosine_similarity(melody_embedding, chord_embedding, dim=-1)
+        
+        # Reshape to [batch_size, num_windows]
+        num_windows = similarities.shape[0] // batch_size
+        similarities = similarities.view(batch_size, num_windows)
+        
+        # Average across windows to get final reward
+        return torch.mean(similarities, dim=1)
 
 if __name__ == '__main__':
     # Test the model
