@@ -125,6 +125,7 @@ def generate_online(model: OnlineTransformer,
     melody_vocab_size = tokenizer_info['melody_vocab_size']
     chord_token_start = melody_vocab_size + 1  # After PAD token
     chord_silence_token = chord_token_start  # First chord token is silence
+    chord_vocab_size = tokenizer_info['chord_vocab_size']
     
     frames_per_beat = 4  # Standard in our dataset
     wait_frames = wait_beats * frames_per_beat
@@ -144,25 +145,36 @@ def generate_online(model: OnlineTransformer,
             # Track current chord and its duration for each sequence in batch
             current_chords = torch.full((batch_size,), chord_silence_token, device=device)
             chord_durations = torch.zeros(batch_size, device=device)
+            is_hold_token = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
+            # Generate one token at a time
             for t in range(seq_length):
-                # 1. Append the next ground truth melody token
-                current_melody_tokens = melody_tokens[:, t].unsqueeze(1)
-                generated_so_far = torch.cat([generated_so_far, current_melody_tokens], dim=1)
+                # 1. Create input sequence for the model
+                # Interleave generated chords with melody tokens
+                melody_prefix = melody_tokens[:, :t+1]
+                input_seq = torch.zeros((batch_size, generated_so_far.size(1) + melody_prefix.size(1)), 
+                                     dtype=torch.long, device=device)
+                input_seq[:, 0::2] = generated_so_far  # Even indices for chords
+                input_seq[:, 1::2] = melody_prefix     # Odd indices for melody
 
-                # 2. Predict the next token (which should be a chord)
-                logits = model(generated_so_far)[:, -1, :]
-                
-                # Determine which sequences need new chords
-                need_new_chord = (chord_durations >= max_chord_frames) | (
-                    (chord_durations >= min_chord_frames) & 
-                    (torch.rand(batch_size, device=device) < change_prob)  # Configurable change probability
-                )
-                
-                # If we're still in the waiting period, force silence tokens
+                # 2. Get model predictions
+                logits = model(input_seq)[:, -1, :]  # Get logits for next token
+
+                # 3. Determine which sequences need new chords
+                # Need new chord if:
+                # a) Current chord duration exceeds max_chord_frames
+                # b) Current chord duration >= min_chord_frames AND random chance < change_prob
+                # c) Current chord is silence and we're past the waiting period
+                rand_change = (torch.rand(batch_size, device=device) < change_prob) & (chord_durations >= min_chord_frames)
+                need_new_chord = ((chord_durations >= max_chord_frames) | 
+                                rand_change |
+                                ((current_chords == chord_silence_token) & (t >= wait_frames)))
+
+                # 4. Generate next tokens
                 if t < wait_frames:
-                    need_new_chord.fill_(False)
+                    # During waiting period, only output silence
                     next_chord_tokens = torch.full((batch_size, 1), chord_silence_token, device=device)
+                    chord_durations += 1
                 else:
                     # For sequences that need new chords, sample from the distribution
                     if need_new_chord.any():
@@ -184,6 +196,15 @@ def generate_online(model: OnlineTransformer,
                         # Update current chords and reset durations for changed sequences
                         current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)
                         chord_durations[need_new_chord] = 0
+                        is_hold_token[need_new_chord] = False
+                    
+                    # For continuing chords, use hold tokens
+                    hold_mask = ~need_new_chord & ~is_hold_token
+                    if hold_mask.any():
+                        # Convert onset tokens to hold tokens by adding chord_vocab_size/2
+                        hold_offset = chord_vocab_size // 2
+                        current_chords[hold_mask] = current_chords[hold_mask] + hold_offset
+                        is_hold_token[hold_mask] = True
                     
                     # Create next token tensor with current chords
                     next_chord_tokens = current_chords.unsqueeze(1)
@@ -191,7 +212,7 @@ def generate_online(model: OnlineTransformer,
                     # Increment durations
                     chord_durations += 1
 
-                # 3. Append the generated chord token
+                # 5. Append the generated chord token
                 generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
 
             # Collect results for the batch
@@ -200,7 +221,6 @@ def generate_online(model: OnlineTransformer,
                 full_sequence = generated_so_far[i, 1:].cpu().numpy()
                 generated_sequences.append(full_sequence)
 
-    print(f"\nGenerated {len(generated_sequences)} sequences in online mode.")
     return generated_sequences, ground_truth_sequences
 
 def main(args):
