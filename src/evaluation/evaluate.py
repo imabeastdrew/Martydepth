@@ -115,8 +115,11 @@ def generate_online(model: OnlineTransformer,
     generated_sequences = []
     ground_truth_sequences = []
 
-    chord_start_token_idx = tokenizer_info['melody_vocab_size']
-    chord_silence_token = tokenizer_info.get('chord_silence_token', chord_start_token_idx)
+    # Get token indices from tokenizer info
+    melody_vocab_size = tokenizer_info['melody_vocab_size']
+    chord_token_start = melody_vocab_size + 1  # After PAD token
+    chord_silence_token = chord_token_start  # First chord token is silence
+    
     frames_per_beat = 4  # Standard in our dataset
     wait_frames = wait_beats * frames_per_beat
 
@@ -130,7 +133,7 @@ def generate_online(model: OnlineTransformer,
             seq_length = melody_tokens.shape[1]
 
             # Start with silence tokens for the waiting period
-            generated_so_far = torch.full((batch_size, 1), chord_silence_token, dtype=torch.long, device=device)
+            generated_so_far = torch.full((batch_size, 1), chord_silence_token, device=device)
 
             for t in range(seq_length):
                 # 1. Append the next ground truth melody token
