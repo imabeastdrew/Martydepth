@@ -92,8 +92,10 @@ def generate_online(model: OnlineTransformer,
                     device: torch.device,
                     temperature: float = 1.0,
                     top_k: int = 50,
-                    top_p: float = 0.9,  # Added nucleus sampling parameter
-                    wait_beats: int = 2) -> list:
+                    wait_beats: int = 2,
+                    min_chord_frames: int = 2,
+                    max_chord_frames: int = 32,
+                    change_prob: float = 0.3) -> list:
     """
     Generate sequences by providing the melody and predicting the chords.
     This function is optimized to process entire batches at once.
@@ -107,8 +109,10 @@ def generate_online(model: OnlineTransformer,
         device: Device to run generation on
         temperature: Sampling temperature (higher = more random)
         top_k: Number of top logits to sample from (0 to disable)
-        top_p: Nucleus sampling threshold (1.0 to disable)
         wait_beats: Number of beats to wait before starting generation (1 beat = 4 frames)
+        min_chord_frames: Minimum number of frames for a chord
+        max_chord_frames: Maximum number of frames for a chord
+        change_prob: Probability to change chord after min duration is met (0.0 to 1.0)
         
     Returns:
         Tuple of generated sequences and ground truth sequences
@@ -136,6 +140,10 @@ def generate_online(model: OnlineTransformer,
 
             # Start with silence tokens for the waiting period
             generated_so_far = torch.full((batch_size, 1), chord_silence_token, device=device)
+            
+            # Track current chord and its duration for each sequence in batch
+            current_chords = torch.full((batch_size,), chord_silence_token, device=device)
+            chord_durations = torch.zeros(batch_size, device=device)
 
             for t in range(seq_length):
                 # 1. Append the next ground truth melody token
@@ -145,34 +153,43 @@ def generate_online(model: OnlineTransformer,
                 # 2. Predict the next token (which should be a chord)
                 logits = model(generated_so_far)[:, -1, :]
                 
+                # Determine which sequences need new chords
+                need_new_chord = (chord_durations >= max_chord_frames) | (
+                    (chord_durations >= min_chord_frames) & 
+                    (torch.rand(batch_size, device=device) < change_prob)  # Configurable change probability
+                )
+                
                 # If we're still in the waiting period, force silence tokens
                 if t < wait_frames:
-                    logits = torch.full_like(logits, float('-inf'))
-                    logits[:, chord_silence_token] = 0.0
+                    need_new_chord.fill_(False)
+                    next_chord_tokens = torch.full((batch_size, 1), chord_silence_token, device=device)
                 else:
-                    # Apply top-k filtering
-                    if top_k > 0:
-                        top_k_logits, top_k_indices = torch.topk(logits, min(top_k, logits.size(-1)))
-                        mask = torch.full_like(logits, float('-inf'))
-                        mask.scatter_(1, top_k_indices, top_k_logits)
-                        logits = mask
-
-                    # Apply nucleus (top-p) sampling
-                    if top_p < 1.0:
-                        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                        cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-                        sorted_indices_to_remove = cumulative_probs > top_p
-                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                        sorted_indices_to_remove[..., 0] = 0
-                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                        logits[indices_to_remove] = float('-inf')
+                    # For sequences that need new chords, sample from the distribution
+                    if need_new_chord.any():
+                        # Apply top-k filtering
+                        if top_k > 0:
+                            top_k_logits, top_k_indices = torch.topk(logits[need_new_chord], 
+                                                                   min(top_k, logits.size(-1)))
+                            filtered_logits = torch.full_like(logits[need_new_chord], float('-inf'))
+                            filtered_logits.scatter_(1, top_k_indices, top_k_logits)
+                            logits[need_new_chord] = filtered_logits
+                        
+                        # Apply temperature scaling after filtering
+                        logits[need_new_chord] = logits[need_new_chord] / temperature
+                        
+                        # Sample new chord tokens
+                        probs = torch.softmax(logits[need_new_chord], dim=-1)
+                        new_chord_tokens = torch.multinomial(probs, num_samples=1)
+                        
+                        # Update current chords and reset durations for changed sequences
+                        current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)
+                        chord_durations[need_new_chord] = 0
                     
-                    # Apply temperature scaling after filtering
-                    logits = logits / temperature
-
-                # Sample the next chord token
-                probs = torch.softmax(logits, dim=-1)
-                next_chord_tokens = torch.multinomial(probs, num_samples=1)
+                    # Create next token tensor with current chords
+                    next_chord_tokens = current_chords.unsqueeze(1)
+                    
+                    # Increment durations
+                    chord_durations += 1
 
                 # 3. Append the generated chord token
                 generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)

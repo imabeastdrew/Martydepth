@@ -104,7 +104,9 @@ def generate_offline(model: OfflineTeacherModel,
                      device: torch.device,
                      temperature: float = 1.0,
                      top_k: int = 50,
-                     top_p: float = 0.9) -> tuple[list, list]:
+                     min_chord_frames: int = 2,
+                     max_chord_frames: int = 32,
+                     change_prob: float = 0.3) -> tuple[list, list]:
     """
     Generate chord sequences for given melodies using the offline model.
     The offline model can see the entire melody sequence before generating each chord.
@@ -116,93 +118,83 @@ def generate_offline(model: OfflineTeacherModel,
         device: Device to run generation on
         temperature: Sampling temperature (higher = more random)
         top_k: Number of top logits to sample from (0 to disable)
-        top_p: Nucleus sampling threshold (1.0 to disable)
+        min_chord_frames: Minimum number of frames for a chord
+        max_chord_frames: Maximum number of frames for a chord
+        change_prob: Probability to change chord after min duration is met (0.0 to 1.0)
         
     Returns:
-        Tuple of generated sequences and ground truth sequences
+        Tuple of (generated sequences, ground truth sequences)
     """
     model.eval()
     generated_sequences = []
     ground_truth_sequences = []
     
-    chord_token_start = tokenizer_info.get("chord_token_start", CHORD_TOKEN_START)
-    local_chord_silence = 0  # The offline model's internal silence token is 0
+    # Get token indices from tokenizer info
+    melody_vocab_size = tokenizer_info['melody_vocab_size']
+    chord_token_start = melody_vocab_size + 1  # After PAD token
+    chord_silence_token = chord_token_start  # First chord token is silence
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
-            gt_chords = batch['chord_target'].to(device)
-
+            ground_truth_sequences.extend(batch['target_tokens'].cpu().numpy())
+            
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
-
-            # 1. Encode the entire melody sequence for each example in the batch
-            melody_embed = model.embeddings.encode_melody(melody_tokens)
-            memory = model.transformer.encoder(melody_embed)
-
-            # 2. Initialize decoder input with silence token
-            decoder_input = torch.full((batch_size, 1), local_chord_silence, dtype=torch.long, device=device)
-
-            # 3. Generate chords autoregressively with access to full melody context
-            for _ in range(seq_length):
-                chord_embed = model.embeddings.encode_chords(decoder_input)
-                causal_mask = model.create_causal_mask(decoder_input.size(1), device)
-                
-                decoder_output = model.transformer.decoder(chord_embed, memory, tgt_mask=causal_mask)
-                logits = model.output_head(decoder_output[:, -1, :])
-                
-                # Apply top-k filtering
-                if top_k > 0:
-                    top_k_logits, top_k_indices = torch.topk(logits, min(top_k, logits.size(-1)))
-                    mask = torch.full_like(logits, float('-inf'))
-                    mask.scatter_(1, top_k_indices, top_k_logits)
-                    logits = mask
-
-                # Apply nucleus (top-p) sampling
-                if top_p < 1.0:
-                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-                    sorted_indices_to_remove = cumulative_probs > top_p
-                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                    sorted_indices_to_remove[..., 0] = 0
-                    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                    logits[indices_to_remove] = float('-inf')
-                
-                # Apply temperature scaling after filtering
-                logits = logits / temperature
-                
-                # Sample from the filtered distribution
-                probs = torch.softmax(logits, dim=-1)
-                next_tokens = torch.multinomial(probs, num_samples=1)
-                decoder_input = torch.cat([decoder_input, next_tokens], dim=1)
             
-            # 4. Process results
-            # Convert from local chord space to global token space
-            final_chords_batch_local = decoder_input[:, 1:]  # Skip initial silence
-            final_chords_batch_global = (final_chords_batch_local + chord_token_start).cpu().numpy()
-            final_melody_batch = melody_tokens.cpu().numpy()
-            gt_chords_batch = gt_chords.cpu().numpy()
+            # Start with silence tokens
+            generated_so_far = torch.full((batch_size, 1), chord_silence_token, device=device)
+            
+            # Track current chord and its duration for each sequence in batch
+            current_chords = torch.full((batch_size,), chord_silence_token, device=device)
+            chord_durations = torch.zeros(batch_size, device=device)
 
-            # Create interleaved sequences for each example in the batch
+            for t in range(seq_length):
+                # Get model predictions
+                logits = model(melody_tokens, generated_so_far)[:, -1, :]
+                
+                # Determine which sequences need new chords
+                need_new_chord = (chord_durations >= max_chord_frames) | (
+                    (chord_durations >= min_chord_frames) & 
+                    (torch.rand(batch_size, device=device) < change_prob)  # Configurable change probability
+                )
+                
+                # For sequences that need new chords, sample from the distribution
+                if need_new_chord.any():
+                    # Apply top-k filtering
+                    if top_k > 0:
+                        top_k_logits, top_k_indices = torch.topk(logits[need_new_chord], 
+                                                               min(top_k, logits.size(-1)))
+                        filtered_logits = torch.full_like(logits[need_new_chord], float('-inf'))
+                        filtered_logits.scatter_(1, top_k_indices, top_k_logits)
+                        logits[need_new_chord] = filtered_logits
+                    
+                    # Apply temperature scaling after filtering
+                    logits[need_new_chord] = logits[need_new_chord] / temperature
+                    
+                    # Sample new chord tokens
+                    probs = torch.softmax(logits[need_new_chord], dim=-1)
+                    new_chord_tokens = torch.multinomial(probs, num_samples=1)
+                    
+                    # Update current chords and reset durations for changed sequences
+                    current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)
+                    chord_durations[need_new_chord] = 0
+                
+                # Create next token tensor with current chords
+                next_chord_tokens = current_chords.unsqueeze(1)
+                
+                # Increment durations
+                chord_durations += 1
+                
+                # Append the generated chord token
+                generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
+
+            # Collect results for the batch
+            # Skip the first token as it's just the initial silence
             for i in range(batch_size):
-                final_chords = final_chords_batch_global[i]
-                final_melody = final_melody_batch[i]
-                gt_chords_single = gt_chords_batch[i]
-                
-                num_tokens = min(len(final_chords), len(final_melody))
-                
-                # Create generated interleaved sequence
-                gen_interleaved = np.empty(num_tokens * 2, dtype=np.int64)
-                gen_interleaved[0::2] = final_chords[:num_tokens]
-                gen_interleaved[1::2] = final_melody[:num_tokens]
-                generated_sequences.append(gen_interleaved)
+                full_sequence = generated_so_far[i, 1:].cpu().numpy()
+                generated_sequences.append(full_sequence)
 
-                # Create ground truth interleaved sequence
-                gt_interleaved = np.empty(num_tokens * 2, dtype=np.int64)
-                gt_interleaved[0::2] = gt_chords_single[:num_tokens]
-                gt_interleaved[1::2] = final_melody[:num_tokens]
-                ground_truth_sequences.append(gt_interleaved)
-                
     print(f"\nGenerated {len(generated_sequences)} sequences in offline mode.")
     return generated_sequences, ground_truth_sequences
 
