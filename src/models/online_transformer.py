@@ -60,9 +60,10 @@ class OnlineTransformer(nn.Module):
     def create_causal_mask(self, seq_length: int) -> torch.Tensor:
         """Create causal mask to prevent attending to future tokens.
         
-        Returns a boolean tensor where True indicates a position to be masked.
+        Returns a boolean tensor where False indicates a position to be masked.
         """
-        return torch.triu(torch.ones(seq_length, seq_length, dtype=torch.bool), diagonal=1)
+        # Create a mask where False values indicate positions to be masked (future tokens)
+        return ~torch.triu(torch.ones(seq_length, seq_length, dtype=torch.bool), diagonal=1)
         
     def forward(self, tokens: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
