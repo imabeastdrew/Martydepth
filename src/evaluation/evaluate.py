@@ -92,6 +92,7 @@ def generate_online(model: OnlineTransformer,
                     device: torch.device,
                     temperature: float = 1.0,
                     top_k: int = 50,
+                    top_p: float = 0.9,  # Added nucleus sampling parameter
                     wait_beats: int = 2) -> list:
     """
     Generate sequences by providing the melody and predicting the chords.
@@ -105,7 +106,8 @@ def generate_online(model: OnlineTransformer,
         tokenizer_info: Dictionary containing tokenization information
         device: Device to run generation on
         temperature: Sampling temperature (higher = more random)
-        top_k: Number of top logits to sample from
+        top_k: Number of top logits to sample from (0 to disable)
+        top_p: Nucleus sampling threshold (1.0 to disable)
         wait_beats: Number of beats to wait before starting generation (1 beat = 4 frames)
         
     Returns:
@@ -141,19 +143,32 @@ def generate_online(model: OnlineTransformer,
                 generated_so_far = torch.cat([generated_so_far, current_melody_tokens], dim=1)
 
                 # 2. Predict the next token (which should be a chord)
-                logits = model(generated_so_far)[:, -1, :] / temperature
+                logits = model(generated_so_far)[:, -1, :]
                 
                 # If we're still in the waiting period, force silence tokens
                 if t < wait_frames:
                     logits = torch.full_like(logits, float('-inf'))
                     logits[:, chord_silence_token] = 0.0
                 else:
-                    # Top-k filtering for normal generation
+                    # Apply top-k filtering
                     if top_k > 0:
-                        top_k_logits, top_k_indices = torch.topk(logits, top_k)
+                        top_k_logits, top_k_indices = torch.topk(logits, min(top_k, logits.size(-1)))
                         mask = torch.full_like(logits, float('-inf'))
                         mask.scatter_(1, top_k_indices, top_k_logits)
                         logits = mask
+
+                    # Apply nucleus (top-p) sampling
+                    if top_p < 1.0:
+                        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                        cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                        sorted_indices_to_remove = cumulative_probs > top_p
+                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                        sorted_indices_to_remove[..., 0] = 0
+                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                        logits[indices_to_remove] = float('-inf')
+                    
+                    # Apply temperature scaling after filtering
+                    logits = logits / temperature
 
                 # Sample the next chord token
                 probs = torch.softmax(logits, dim=-1)

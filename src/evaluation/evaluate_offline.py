@@ -103,7 +103,8 @@ def generate_offline(model: OfflineTeacherModel,
                      tokenizer_info: Dict,
                      device: torch.device,
                      temperature: float = 1.0,
-                     top_k: int = 50) -> tuple[list, list]:
+                     top_k: int = 50,
+                     top_p: float = 0.9) -> tuple[list, list]:
     """
     Generate chord sequences for given melodies using the offline model.
     The offline model can see the entire melody sequence before generating each chord.
@@ -114,7 +115,8 @@ def generate_offline(model: OfflineTeacherModel,
         tokenizer_info: Dictionary containing tokenization information
         device: Device to run generation on
         temperature: Sampling temperature (higher = more random)
-        top_k: Number of top logits to sample from
+        top_k: Number of top logits to sample from (0 to disable)
+        top_p: Nucleus sampling threshold (1.0 to disable)
         
     Returns:
         Tuple of generated sequences and ground truth sequences
@@ -147,14 +149,27 @@ def generate_offline(model: OfflineTeacherModel,
                 causal_mask = model.create_causal_mask(decoder_input.size(1), device)
                 
                 decoder_output = model.transformer.decoder(chord_embed, memory, tgt_mask=causal_mask)
-                logits = model.output_head(decoder_output[:, -1, :]) / temperature
+                logits = model.output_head(decoder_output[:, -1, :])
                 
                 # Apply top-k filtering
                 if top_k > 0:
-                    top_k_logits, top_k_indices = torch.topk(logits, top_k)
+                    top_k_logits, top_k_indices = torch.topk(logits, min(top_k, logits.size(-1)))
                     mask = torch.full_like(logits, float('-inf'))
                     mask.scatter_(1, top_k_indices, top_k_logits)
                     logits = mask
+
+                # Apply nucleus (top-p) sampling
+                if top_p < 1.0:
+                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                    sorted_indices_to_remove = cumulative_probs > top_p
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 0] = 0
+                    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                    logits[indices_to_remove] = float('-inf')
+                
+                # Apply temperature scaling after filtering
+                logits = logits / temperature
                 
                 # Sample from the filtered distribution
                 probs = torch.softmax(logits, dim=-1)
