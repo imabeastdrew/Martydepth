@@ -175,6 +175,11 @@ def generate_online(model: OnlineTransformer,
 
                 # Get model predictions
                 logits = model(input_seq)[:, -1, :]  # Get logits for next token
+                
+                # Mask out non-chord tokens
+                mask = torch.full_like(logits, float('-inf'))
+                mask[:, chord_token_start:chord_token_start + chord_vocab_size] = 0
+                logits = logits + mask
 
                 # Apply top-k filtering
                 if top_k > 0:
@@ -186,8 +191,20 @@ def generate_online(model: OnlineTransformer,
                 # Apply temperature scaling
                 logits = logits / temperature
                 
+                # Add debug prints
+                if t == 0 and batch_idx == 0:
+                    print("\nDebug - Logits and Probabilities:")
+                    print(f"Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
+                    print(f"Any NaN in logits: {torch.isnan(logits).any().item()}")
+                
                 # Sample new chord tokens
                 probs = torch.softmax(logits, dim=-1)
+                
+                if t == 0 and batch_idx == 0:
+                    print(f"Probs sum: {probs.sum(dim=-1)[0].item():.6f}")
+                    print(f"Any NaN in probs: {torch.isnan(probs).any().item()}")
+                    print(f"Any zeros in probs: {(probs == 0).all(dim=-1).any().item()}")
+                
                 new_chord_tokens = torch.multinomial(probs, num_samples=1)
 
                 # Update tracking variables
