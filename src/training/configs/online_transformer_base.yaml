@@ -6,6 +6,7 @@ batch_size: 64
 num_workers: 2
 
 # --- Model architecture ---
+vocab_size: 4665  # Fixed: 178 melody + 4486 chord + 1 for off-by-one error
 embed_dim: 512
 num_layers: 8
 num_heads: 8

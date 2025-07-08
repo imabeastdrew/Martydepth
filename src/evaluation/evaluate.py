@@ -228,10 +228,19 @@ def generate_online(model: OnlineTransformer,
                 # 1. Create input sequence for the model
                 # Interleave generated chords with melody tokens
                 melody_prefix = melody_tokens[:, :t+1]
-                input_seq = torch.full((batch_size, 2*(t+1)), chord_token_start, dtype=torch.long, device=device)
-                if t > 0:
+                
+                # Create input sequence - initialize chord positions properly
+                if t == 0:
+                    # For first timestep, we only have [chord_0, melody_0]
+                    # Don't bias the first chord - let the model predict it from melody
+                    input_seq = torch.zeros((batch_size, 2), dtype=torch.long, device=device)
+                    # input_seq[:, 0] remains 0 (silence/padding) - model will predict first chord
+                    input_seq[:, 1] = melody_prefix[:, 0]  # Set melody token
+                else:
+                    # For subsequent timesteps: [prev_chords..., current_melody]
+                    input_seq = torch.zeros((batch_size, 2*(t+1)), dtype=torch.long, device=device)
                     input_seq[:, 0:-2:2] = generated_so_far  # Even indices for previous chords
-                input_seq[:, 1::2] = melody_prefix     # Odd indices for melody
+                    input_seq[:, 1::2] = melody_prefix     # Odd indices for melody
 
                 if t == 0 and batch_idx == 0:
                     print("\nDebug - Input Sequence:")
@@ -334,12 +343,10 @@ def generate_online(model: OnlineTransformer,
                 hold_mask = ~need_new_chord & ~is_hold_token
                 if hold_mask.any():
                     # Convert onset tokens to hold tokens
-                    # Use actual number of chord patterns from tokenizer info
-                    num_chord_patterns = len(tokenizer_info['token_to_chord']) // 2  # Each pattern has onset + hold
-                    relative_pos = current_chords[hold_mask] - chord_token_start
-                    # Ensure hold tokens stay within valid range
+                    # Based on ChordTokenizer: hold_token = onset_token + num_onset_patterns
+                    num_onset_patterns = len(tokenizer_info['token_to_chord']) // 2  # Half are onset, half are hold
                     current_chords[hold_mask] = torch.clamp(
-                        chord_token_start + (relative_pos + num_chord_patterns),
+                        current_chords[hold_mask] + num_onset_patterns,
                         min=chord_token_start,
                         max=tokenizer_info['total_vocab_size'] - 1
                     )
