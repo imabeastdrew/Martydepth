@@ -10,6 +10,7 @@ class OfflineTeacherEmbeddings(nn.Module):
     def __init__(self, melody_vocab_size, chord_vocab_size, embed_dim, max_seq_length, pad_token_id: int):
         super().__init__()
         self.pad_token_id = pad_token_id
+        self.embed_dim = embed_dim  # Store embed_dim as class attribute
         
         # Token embeddings (512-dim)
         self.melody_embedding = nn.Embedding(melody_vocab_size, embed_dim)
@@ -244,11 +245,18 @@ class OfflineTeacherModel(nn.Module):
             dim_feedforward=4 * embed_dim,
             dropout=dropout,
             batch_first=True,
-            norm_first=True  # Use Pre-LN for stability
+            norm_first=False  # Use Post-LN for initial stability
         )
+        
+        # Initialize transformer weights
+        for p in self.transformer.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
         
         # Output projection to chord vocabulary
         self.output_head = nn.Linear(embed_dim, chord_vocab_size)
+        nn.init.normal_(self.output_head.weight, mean=0, std=1.0/math.sqrt(embed_dim))
+        nn.init.zeros_(self.output_head.bias)
         
         # Dropout
         self.dropout = nn.Dropout(dropout)
@@ -291,8 +299,8 @@ class OfflineTeacherModel(nn.Module):
         Args:
             melody_tokens: [batch, seq] - melody token sequence
             chord_tokens: [batch, seq] - chord token sequence
-            melody_mask: [batch, seq] - True for padding tokens in melody
-            chord_mask: [batch, seq] - True for padding tokens in chords
+            melody_mask: [batch, seq] - True for padding tokens in melody (PyTorch convention)
+            chord_mask: [batch, seq] - True for padding tokens in chords (PyTorch convention)
         """
         # Get embeddings
         melody_embeds = self.embeddings.encode_melody(melody_tokens)  # [batch, seq, embed_dim]
@@ -302,13 +310,12 @@ class OfflineTeacherModel(nn.Module):
         seq_length = chord_tokens.size(1)
         causal_mask = self.create_causal_mask(seq_length, chord_tokens.device)
         
-        # Convert padding masks to PyTorch format (True blocks attention)
-        src_key_padding_mask = melody_mask if melody_mask is not None else None
-        tgt_key_padding_mask = chord_mask if chord_mask is not None else None
+        # PyTorch expects padding masks where True means to block attention
+        # Our input masks already follow this convention (True for padding)
+        src_key_padding_mask = melody_mask
+        tgt_key_padding_mask = chord_mask
         
         # Forward through transformer
-        # Note: PyTorch expects tgt_mask to be additive (not multiplicative)
-        # and src/tgt_key_padding_mask where True means to block attention
         output = self.transformer(
             src=melody_embeds,                      # Encoder input (melody)
             tgt=chord_embeds,                       # Decoder input (chords)
