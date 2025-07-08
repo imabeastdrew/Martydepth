@@ -282,6 +282,23 @@ def generate_online(model: OnlineTransformer,
 
                 # Sample new chord tokens
                 probs = torch.softmax(logits, dim=-1)
+                
+                # Debug: Show probability distribution for first batch
+                if t == 0 and batch_idx == 0:
+                    # Get top 10 probabilities and their tokens
+                    top_probs, top_indices = torch.topk(probs[0], k=10)
+                    print(f"\nDebug - Top 10 chord probabilities:")
+                    for i in range(10):
+                        token_idx = top_indices[i].item()
+                        prob = top_probs[i].item()
+                        print(f"  Token {token_idx}: {prob:.4f}")
+                    
+                    # Check if distribution is too peaked
+                    max_prob = torch.max(probs[0]).item()
+                    entropy = -torch.sum(probs[0] * torch.log(probs[0] + 1e-10)).item()
+                    print(f"  Max probability: {max_prob:.4f}")
+                    print(f"  Distribution entropy: {entropy:.4f}")
+                
                 # Ensure we only sample from valid chord tokens
                 new_chord_tokens = torch.multinomial(probs, num_samples=1)
                 
