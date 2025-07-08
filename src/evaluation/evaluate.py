@@ -169,7 +169,7 @@ def generate_online(model: OnlineTransformer,
                 # 1. Create input sequence for the model
                 # Interleave generated chords with melody tokens
                 melody_prefix = melody_tokens[:, :t+1]
-                input_seq = torch.zeros((batch_size, 2*(t+1)), dtype=torch.long, device=device)
+                input_seq = torch.full((batch_size, 2*(t+1)), chord_token_start, dtype=torch.long, device=device)
                 if t > 0:
                     input_seq[:, 0:-2:2] = generated_so_far  # Even indices for previous chords
                 input_seq[:, 1::2] = melody_prefix     # Odd indices for melody
@@ -181,8 +181,73 @@ def generate_online(model: OnlineTransformer,
                     print("First sequence input:")
                     print(input_seq[0])
                     print("First melody token:", melody_prefix[0])
+                    print(f"Using CHORD_TOKEN_START={chord_token_start} for initial chord position")
+                    print("\nModel Configuration:")
+                    print(f"Vocab size: {model.vocab_size}")
+                    print(f"Embed dim: {model.embed_dim}")
+                    print(f"Num heads: {model.num_heads}")
+                    print(f"Num layers: {model.num_layers}")
+                    print(f"Max seq length: {model.max_seq_length}")
+                    print(f"Dropout: {model.dropout}")
 
-                # 2. Get model predictions
+                # 2. Get model predictions with debugging
+                if batch_idx == 0 and t == 0:
+                    print("\nDebug - Model Forward Pass:")
+                    # Check embeddings
+                    embeddings = model.token_embedding(input_seq)
+                    pos_embeddings = model.position_embedding(torch.arange(input_seq.size(1), device=device))
+                    print(f"\nToken Embeddings:")
+                    print(f"Shape: {embeddings.shape}")
+                    print(f"Range: [{embeddings.min().item():.4f}, {embeddings.max().item():.4f}]")
+                    print(f"NaNs: {torch.isnan(embeddings).sum().item()}")
+                    print(f"\nPosition Embeddings:")
+                    print(f"Shape: {pos_embeddings.shape}")
+                    print(f"Range: [{pos_embeddings.min().item():.4f}, {pos_embeddings.max().item():.4f}]")
+                    print(f"NaNs: {torch.isnan(pos_embeddings).sum().item()}")
+                    
+                    # Track intermediate values through transformer layers
+                    x = embeddings + pos_embeddings.unsqueeze(0)
+                    print(f"\nInput to First Layer:")
+                    print(f"Range: [{x.min().item():.4f}, {x.max().item():.4f}]")
+                    print(f"NaNs: {torch.isnan(x).sum().item()}")
+                    
+                    # Check each transformer layer
+                    for i, layer in enumerate(model.transformer_layers):
+                        # Pre-LayerNorm
+                        norm_x = layer.norm1(x)
+                        print(f"\nLayer {i} Pre-Norm:")
+                        print(f"Range: [{norm_x.min().item():.4f}, {norm_x.max().item():.4f}]")
+                        print(f"NaNs: {torch.isnan(norm_x).sum().item()}")
+                        
+                        # Self-attention
+                        q = layer.self_attn.q_proj(norm_x)
+                        k = layer.self_attn.k_proj(norm_x)
+                        v = layer.self_attn.v_proj(norm_x)
+                        print(f"\nLayer {i} QKV:")
+                        print(f"Q range: [{q.min().item():.4f}, {q.max().item():.4f}], NaNs: {torch.isnan(q).sum().item()}")
+                        print(f"K range: [{k.min().item():.4f}, {k.max().item():.4f}], NaNs: {torch.isnan(k).sum().item()}")
+                        print(f"V range: [{v.min().item():.4f}, {v.max().item():.4f}], NaNs: {torch.isnan(v).sum().item()}")
+                        
+                        # Get attention output
+                        attn_output = layer.self_attn(norm_x)
+                        print(f"\nLayer {i} Attention Output:")
+                        print(f"Range: [{attn_output.min().item():.4f}, {attn_output.max().item():.4f}]")
+                        print(f"NaNs: {torch.isnan(attn_output).sum().item()}")
+                        
+                        # FFN
+                        x = x + attn_output
+                        norm_x = layer.norm2(x)
+                        ffn_output = layer.ffn(norm_x)
+                        print(f"\nLayer {i} FFN Output:")
+                        print(f"Range: [{ffn_output.min().item():.4f}, {ffn_output.max().item():.4f}]")
+                        print(f"NaNs: {torch.isnan(ffn_output).sum().item()}")
+                        
+                        x = x + ffn_output
+                        print(f"\nLayer {i} Final Output:")
+                        print(f"Range: [{x.min().item():.4f}, {x.max().item():.4f}]")
+                        print(f"NaNs: {torch.isnan(x).sum().item()}")
+
+                # Get model predictions
                 logits = model(input_seq)[:, -1, :]  # Get logits for next token
 
                 if batch_idx == 0 and t == 0:
