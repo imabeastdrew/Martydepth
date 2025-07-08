@@ -218,54 +218,20 @@ def generate_online(model: OnlineTransformer,
                     input_seq = torch.clamp(input_seq, 0, tokenizer_info['total_vocab_size'] - 1)
 
                 # Get model predictions with attention mask
-                try:
-                    raw_logits = model(input_seq, padding_mask=attention_mask)
-                    if t == 0 and batch_idx == 0:
-                        print("\nDebug - Raw Model Output:")
-                        print(f"Raw logits shape: {raw_logits.shape}")
-                        print(f"Raw logits range: [{raw_logits.min().item():.2f}, {raw_logits.max().item():.2f}]")
-                        print(f"Any NaN in raw logits: {torch.isnan(raw_logits).any().item()}")
-                        print(f"Attention mask shape: {attention_mask.shape}")
-                        print(f"Attention mask dtype: {attention_mask.dtype}")
-                        print(f"Attention mask sum: {attention_mask.sum().item()}")
-                except Exception as e:
-                    print(f"\nError during model forward pass: {str(e)}")
-                    raise
-
+                raw_logits = model(input_seq, padding_mask=attention_mask)
                 logits = raw_logits[:, -1, :]  # Get logits for next token
 
-                # Mask out non-chord tokens and add numerical stability
+                # Mask out non-chord tokens
                 mask = torch.full_like(logits, float('-inf'))
                 mask[:, chord_token_start:chord_token_start + chord_vocab_size] = 0
                 logits = logits + mask
-
-                # Clip extreme values for numerical stability
-                logits = torch.clamp(logits, min=-100, max=100)
-                
-                # Replace any remaining NaN/Inf values with very negative numbers
-                logits = torch.nan_to_num(logits, nan=float('-1e9'), posinf=100, neginf=-100)
 
                 # Apply temperature scaling
                 logits = logits / temperature
 
                 # Sample new chord tokens
                 probs = torch.softmax(logits, dim=-1)
-                
-                # Verify probability distribution
-                if t == 0 and batch_idx == 0:
-                    print("\nDebug - Probability Distribution:")
-                    print(f"Probs sum: {probs.sum(dim=-1)[0].item():.6f}")
-                    print(f"Any NaN in probs: {torch.isnan(probs).any().item()}")
-                    print(f"Any zeros in probs: {(probs == 0).all(dim=-1).any().item()}")
-                    print(f"Number of non-zero probabilities: {(probs[0] > 0).sum().item()}")
-
-                # Sample from valid probabilities
-                try:
-                    new_chord_tokens = torch.multinomial(probs, num_samples=1)
-                except RuntimeError as e:
-                    print(f"Error during sampling: {e}")
-                    print(f"Probability stats - min: {probs.min().item():.2e}, max: {probs.max().item():.2e}")
-                    raise
+                new_chord_tokens = torch.multinomial(probs, num_samples=1)
 
                 # Update tracking variables
                 current_chords = new_chord_tokens.squeeze(-1)
