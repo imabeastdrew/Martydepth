@@ -1,7 +1,7 @@
 {
     "melody_vocab_size": 178,
     "chord_vocab_size": 4486,
-    "total_vocab_size": 4664,
+    "total_vocab_size": 4665,
     "pad_token_id": 178,
     "chord_token_start": 179,
     "chord_silence_token": null,

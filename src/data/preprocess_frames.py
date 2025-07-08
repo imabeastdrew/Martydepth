@@ -269,7 +269,7 @@ class MIDITokenizer:
             token: Token to decode
             
         Returns:
-            Tuple of (midi_note, is_hold) or (None, False) for special tokens
+            Tuple of (midi_note, is_onset) or (None, False) for special tokens
         """
         if token == self.silence_token or token == self.pad_token:
             return None, False
@@ -278,8 +278,8 @@ class MIDITokenizer:
         if midi_note is None:
             return None, False
             
-        is_hold = token >= MELODY_ONSET_HOLD_START
-        return midi_note, is_hold
+        is_onset = token < MELODY_ONSET_HOLD_START
+        return midi_note, is_onset
 
 class FramePreprocessor:
     def __init__(self, sequence_length: int = 256):
@@ -428,10 +428,18 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
                 'is_hold': chord_info['is_hold']
             }
 
+    # Calculate the actual maximum token ID to determine total vocab size
+    max_token_id = 0
+    for token_str in token_to_chord.keys():
+        max_token_id = max(max_token_id, int(token_str))
+    
+    # Total vocab size should be max_token_id + 1 to include all tokens from 0 to max_token_id
+    total_vocab_size = max_token_id + 1
+    
     tokenizer_info = {
         "melody_vocab_size": MELODY_VOCAB_SIZE,
         "chord_vocab_size": chord_tokenizer.get_vocab_size(),
-        "total_vocab_size": MELODY_VOCAB_SIZE + chord_tokenizer.get_vocab_size(),
+        "total_vocab_size": total_vocab_size,
         "pad_token_id": PAD_TOKEN,
         "chord_token_start": CHORD_TOKEN_START,
         "chord_silence_token": CHORD_SILENCE_TOKEN,
@@ -512,7 +520,7 @@ def main():
                     if m_token != SILENCE_TOKEN and m_token != PAD_TOKEN:
                         total_melody_notes += 1
                         # Get MIDI note number from token
-                        midi_note, is_hold = preprocessor.melody_tokenizer.decode_token(m_token)
+                        midi_note, is_onset = preprocessor.melody_tokenizer.decode_token(m_token)
                         if midi_note is not None:  # Skip silence/pad tokens
                             if preprocessor.chord_tokenizer.is_melody_note_in_chord(
                                 midi_note,  # Pass the actual MIDI note

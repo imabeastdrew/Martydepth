@@ -379,9 +379,16 @@ def generate_online(model: OnlineTransformer,
                 generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
 
             # Collect results for the batch
-            # Skip the first token as it's just the initial silence
+            # Create full interleaved sequences (melody + chord tokens) for evaluation
             for i in range(batch_size):
-                full_sequence = generated_so_far[i, 1:].cpu().numpy()
+                chord_sequence = generated_so_far[i, 1:].cpu().numpy()  # Skip first token (silence)
+                melody_sequence = melody_tokens[i].cpu().numpy()
+                
+                # Create interleaved sequence: [chord_0, melody_0, chord_1, melody_1, ...]
+                full_sequence = np.zeros(len(chord_sequence) + len(melody_sequence), dtype=np.int64)
+                full_sequence[0::2] = chord_sequence  # Even indices for chords
+                full_sequence[1::2] = melody_sequence  # Odd indices for melody
+                
                 generated_sequences.append(full_sequence)
 
     return generated_sequences, ground_truth_sequences

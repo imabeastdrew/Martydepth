@@ -20,7 +20,7 @@ from src.data.preprocess_frames import MIDITokenizer
 def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
     """
     Parses token sequences into structured musical events.
-    For now, this is a simplified parser.
+    Handles interleaved sequences where even indices are chord tokens and odd indices are melody tokens.
     """
     parsed_data = []
     melody_tokenizer = MIDITokenizer()  # Create tokenizer instance
@@ -31,12 +31,18 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
         active_note = None  # For monophonic melody, only one note can be active
         active_chord = None  # Track current chord
 
-        for time_step, token in enumerate(seq):
+        # Parse interleaved sequence: [chord_0, melody_0, chord_1, melody_1, ...]
+        seq_length = len(seq) // 2  # Number of time steps
+        
+        for time_step in range(seq_length):
+            chord_token = seq[time_step * 2]     # Even indices are chord tokens
+            melody_token = seq[time_step * 2 + 1]  # Odd indices are melody tokens
+            
             # --- Melody Parsing ---
-            if token < CHORD_TOKEN_START:
+            if melody_token < CHORD_TOKEN_START:
                 # Get MIDI note and onset/hold info using MIDITokenizer
-                midi_note, is_onset = melody_tokenizer.decode_token(token)
-                is_silence = token == SILENCE_TOKEN
+                midi_note, is_onset = melody_tokenizer.decode_token(melody_token)
+                is_silence = melody_token == SILENCE_TOKEN
 
                 if midi_note is not None and is_onset:
                     # If a note was already playing, end it.
@@ -50,20 +56,20 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
                         active_note = None
             
             # --- Chord Parsing ---
-            else:
-                token_str = str(token)
+            if chord_token >= CHORD_TOKEN_START:
+                token_str = str(chord_token)
                 if token_str in tokenizer_info['token_to_chord']:
                     chord_info = tokenizer_info['token_to_chord'][token_str]
                     if not chord_info['is_hold']:  # Only process onset tokens
                         if active_chord:
                             chords.append({'token': active_chord['token'], 'start': active_chord['start'], 'end': time_step})
-                        active_chord = {'token': token, 'start': time_step}
+                        active_chord = {'token': chord_token, 'start': time_step}
 
         # Finalize any open notes/chords
         if active_note:
-            notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': len(seq)})
+            notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': seq_length})
         if active_chord:
-            chords.append({'token': active_chord['token'], 'start': active_chord['start'], 'end': len(seq)})
+            chords.append({'token': active_chord['token'], 'start': active_chord['start'], 'end': seq_length})
             
         parsed_data.append({'notes': notes, 'chords': chords})
     return parsed_data
