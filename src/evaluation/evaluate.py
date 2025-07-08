@@ -130,14 +130,30 @@ def generate_online(model: OnlineTransformer,
     frames_per_beat = 4  # Standard in our dataset
     wait_frames = wait_beats * frames_per_beat
 
+    print("\nDebug - Vocabulary Info:")
+    print(f"Melody vocab size: {melody_vocab_size}")
+    print(f"Chord token start: {chord_token_start}")
+    print(f"Chord vocab size: {chord_vocab_size}")
+    print(f"Total vocab size: {tokenizer_info['total_vocab_size']}")
+    print(f"Wait frames: {wait_frames}")
+
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Generating online sequences"):
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Generating online sequences")):
             input_tokens = batch['input_tokens'].to(device)
             melody_tokens = input_tokens[:, 1::2]  # Extract melody tokens
             ground_truth_sequences.extend(batch['target_tokens'].cpu().numpy())
 
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
+
+            if batch_idx == 0:
+                print("\nDebug - First Batch Info:")
+                print(f"Batch size: {batch_size}")
+                print(f"Sequence length: {seq_length}")
+                print(f"Melody tokens shape: {melody_tokens.shape}")
+                print(f"Melody tokens range: [{melody_tokens.min().item()}, {melody_tokens.max().item()}]")
+                print("\nFirst sequence melody tokens:")
+                print(melody_tokens[0][:20])  # Print first 20 tokens
 
             # Start with silence tokens for the waiting period
             generated_so_far = torch.full((batch_size, 1), chord_silence_token, device=device)
@@ -157,8 +173,22 @@ def generate_online(model: OnlineTransformer,
                 input_seq[:, 0::2] = generated_so_far  # Even indices for chords
                 input_seq[:, 1::2] = melody_prefix     # Odd indices for melody
 
+                if batch_idx == 0 and t == 0:
+                    print("\nDebug - First Step Input:")
+                    print(f"Input sequence shape: {input_seq.shape}")
+                    print(f"Input sequence range: [{input_seq.min().item()}, {input_seq.max().item()}]")
+                    print("First sequence input:")
+                    print(input_seq[0])
+
                 # 2. Get model predictions
                 logits = model(input_seq)[:, -1, :]  # Get logits for next token
+
+                if batch_idx == 0 and t == 0:
+                    print("\nDebug - First Step Logits:")
+                    print(f"Logits shape: {logits.shape}")
+                    print(f"Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
+                    print(f"Number of inf/-inf: {torch.isinf(logits).sum().item()}")
+                    print(f"Number of NaN: {torch.isnan(logits).sum().item()}")
 
                 # 3. Determine which sequences need new chords
                 # Need new chord if:
@@ -169,6 +199,12 @@ def generate_online(model: OnlineTransformer,
                 need_new_chord = ((chord_durations >= max_chord_frames) | 
                                 rand_change |
                                 ((current_chords == chord_silence_token) & (t >= wait_frames)))
+
+                if batch_idx == 0 and t == 0:
+                    print("\nDebug - First Step Chord Changes:")
+                    print(f"Number needing new chord: {need_new_chord.sum().item()}")
+                    print(f"Current chord durations: {chord_durations[:5]}")  # First 5 sequences
+                    print(f"Is hold token: {is_hold_token[:5]}")  # First 5 sequences
 
                 # 4. Generate next tokens
                 if t < wait_frames:
@@ -185,13 +221,37 @@ def generate_online(model: OnlineTransformer,
                             filtered_logits = torch.full_like(logits[need_new_chord], float('-inf'))
                             filtered_logits.scatter_(1, top_k_indices, top_k_logits)
                             logits[need_new_chord] = filtered_logits
+
+                            if batch_idx == 0 and t == wait_frames:
+                                print("\nDebug - First Generation Step:")
+                                print(f"Top-k logits range: [{top_k_logits.min().item():.2f}, {top_k_logits.max().item():.2f}]")
+                                print(f"Top-k indices range: [{top_k_indices.min().item()}, {top_k_indices.max().item()}]")
+                                print(f"Filtered logits range: [{filtered_logits.min().item():.2f}, {filtered_logits.max().item():.2f}]")
                         
                         # Apply temperature scaling after filtering
                         logits[need_new_chord] = logits[need_new_chord] / temperature
                         
                         # Sample new chord tokens
                         probs = torch.softmax(logits[need_new_chord], dim=-1)
+
+                        if batch_idx == 0 and t == wait_frames:
+                            print("\nDebug - Sampling:")
+                            print(f"Temperature scaled logits range: [{logits[need_new_chord].min().item():.2f}, {logits[need_new_chord].max().item():.2f}]")
+                            print(f"Probabilities range: [{probs.min().item():.2e}, {probs.max().item():.2e}]")
+                            print(f"Probabilities sum: {probs.sum(dim=-1)}")
+                            print(f"Number of zero probs: {(probs == 0).sum().item()}")
+                            print(f"Number of NaN probs: {torch.isnan(probs).sum().item()}")
+                            print(f"Top 5 probabilities for first sequence:")
+                            top5_probs, top5_indices = torch.topk(probs[0], 5)
+                            for prob, idx in zip(top5_probs, top5_indices):
+                                print(f"Token {idx.item()}: {prob.item():.4f}")
+
                         new_chord_tokens = torch.multinomial(probs, num_samples=1)
+                        
+                        if batch_idx == 0 and t == wait_frames:
+                            print("\nDebug - Generated Tokens:")
+                            print(f"New chord tokens range: [{new_chord_tokens.min().item()}, {new_chord_tokens.max().item()}]")
+                            print(f"First few tokens: {new_chord_tokens[:5].squeeze(-1)}")
                         
                         # Update current chords and reset durations for changed sequences
                         current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)
