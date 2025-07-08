@@ -233,13 +233,37 @@ def generate_online(model: OnlineTransformer,
                 probs = torch.softmax(logits, dim=-1)
                 new_chord_tokens = torch.multinomial(probs, num_samples=1)
 
-                # Update tracking variables
-                current_chords = new_chord_tokens.squeeze(-1)
-                chord_durations = torch.zeros_like(chord_durations)
-                is_hold_token = torch.zeros_like(is_hold_token)
+                # Determine which sequences need new chords
+                need_new_chord = (chord_durations >= max_chord_frames) | (
+                    (chord_durations >= min_chord_frames) & 
+                    (torch.rand(batch_size, device=device) < change_prob)  # Configurable change probability
+                )
+                
+                # For sequences that need new chords, sample from the distribution
+                if need_new_chord.any():
+                    # Update current chords and reset durations for changed sequences
+                    current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)[need_new_chord]
+                    chord_durations[need_new_chord] = 0
+                    is_hold_token[need_new_chord] = False
+                
+                # For continuing chords, use hold tokens
+                hold_mask = ~need_new_chord & ~is_hold_token
+                if hold_mask.any():
+                    # Convert onset tokens to hold tokens
+                    # Ensure we stay within vocab range by first mapping to relative position
+                    relative_pos = current_chords[hold_mask] - chord_token_start
+                    hold_offset = chord_vocab_size // 2
+                    current_chords[hold_mask] = chord_token_start + (relative_pos + hold_offset)
+                    is_hold_token[hold_mask] = True
+                
+                # Create next token tensor with current chords
+                next_chord_tokens = current_chords.unsqueeze(1)
+                
+                # Increment durations
+                chord_durations += 1
 
                 # Append the generated chord token
-                generated_so_far = torch.cat([generated_so_far, new_chord_tokens], dim=1)
+                generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
 
             # Collect results for the batch
             # Skip the first token as it's just the initial silence
