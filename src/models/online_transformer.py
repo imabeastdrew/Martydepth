@@ -60,10 +60,10 @@ class OnlineTransformer(nn.Module):
     def create_causal_mask(self, seq_length: int) -> torch.Tensor:
         """Create causal mask to prevent attending to future tokens.
         
-        Returns a boolean tensor where False indicates a position to be masked.
+        Returns a boolean tensor where True indicates positions to be masked.
         """
-        # Create a mask where False values indicate positions to be masked (future tokens)
-        return ~torch.triu(torch.ones(seq_length, seq_length, dtype=torch.bool), diagonal=1)
+        # Create a mask where True values indicate positions to be masked (future tokens)
+        return torch.triu(torch.ones(seq_length, seq_length, dtype=torch.bool), diagonal=1)
         
     def forward(self, tokens: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
@@ -72,6 +72,7 @@ class OnlineTransformer(nn.Module):
         Args:
             tokens: Interleaved chord/melody sequence [batch_size, seq_length]
             padding_mask: Boolean mask for padding tokens [batch_size, seq_length]
+                        True indicates positions to be masked
         
         Returns:
             logits: Prediction logits for next token [batch_size, seq_length, vocab_size]
@@ -87,22 +88,50 @@ class OnlineTransformer(nn.Module):
         
         # Get embeddings safely
         safe_tokens = tokens.clone()
-        safe_tokens[tokens == self.pad_token_id] = 0
+        safe_tokens[safe_tokens >= self.vocab_size] = 0  # Clamp to valid range
         token_embeds = self.token_embedding(safe_tokens)
-        token_embeds[tokens == self.pad_token_id] = 0.0
-
+        
+        # Scale embeddings for better gradient flow
+        token_embeds = token_embeds * math.sqrt(self.embed_dim)
+        
         pos_embeds = self.position_embedding(positions)
         
         # Combine embeddings
         x = token_embeds + pos_embeds
+        
+        # Create layer norm layers
+        layer_norm = nn.LayerNorm(self.embed_dim, device=tokens.device)
+        x = layer_norm(x)
         x = self.dropout(x)
         
-        # Apply transformer with causal and padding masks
-        x = self.transformer(x, mask=causal_mask, src_key_padding_mask=padding_mask)
-        
-        # Get predictions
-        logits = self.output_head(x)
-        
+        try:
+            # Apply transformer with gradient clipping
+            with torch.set_grad_enabled(self.training):  # Only track gradients during training
+                x = self.transformer(x, mask=causal_mask, src_key_padding_mask=padding_mask)
+                
+                # Add stability checks after each major operation
+                if torch.isnan(x).any():
+                    print("WARNING: NaN detected in transformer output")
+                    x = torch.nan_to_num(x, nan=0.0)
+                elif torch.isinf(x).any():
+                    print("WARNING: Inf detected in transformer output")
+                    x = torch.nan_to_num(x, posinf=1e4, neginf=-1e4)
+                
+                # Get predictions with bounded output
+                x = layer_norm(x)  # Use same layer norm
+                if torch.isnan(x).any() or torch.isinf(x).any():
+                    print("WARNING: NaN/Inf detected after layer norm")
+                    x = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
+                
+                logits = self.output_head(x)
+                
+                # Clip extreme values
+                logits = torch.clamp(logits, min=-100, max=100)
+                
+        except RuntimeError as e:
+            print(f"Error in transformer forward pass: {e}")
+            raise
+            
         return logits
 
 if __name__ == "__main__":

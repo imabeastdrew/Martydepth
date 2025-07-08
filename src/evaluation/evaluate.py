@@ -69,13 +69,28 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         # Handle different possible key names for max_seq_length
         max_seq_length = config.get('max_sequence_length') or 512
 
+        # Set default values for missing config parameters
+        dropout = config.get('dropout', 0.1)  # Default to 0.1 if not specified
+        pad_token_id = tokenizer_info.get('pad_token_id', 0)  # Default to 0 if not specified
+
+        print("\nModel Configuration:")
+        print(f"Vocab size: {vocab_size}")
+        print(f"Embed dim: {config['embed_dim']}")
+        print(f"Num heads: {config['num_heads']}")
+        print(f"Num layers: {config['num_layers']}")
+        print(f"Max seq length: {max_seq_length}")
+        print(f"Dropout: {dropout}")
+        print(f"Pad token ID: {pad_token_id}")
+
         # Instantiate model
         model = OnlineTransformer(
             vocab_size=vocab_size,
             embed_dim=config['embed_dim'],
             num_heads=config['num_heads'],
             num_layers=config['num_layers'],
-            max_seq_length=max_seq_length
+            dropout=dropout,
+            max_seq_length=max_seq_length,
+            pad_token_id=pad_token_id
         ).to(device)
         
         # Load state dict
@@ -83,6 +98,19 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.eval()
         
+        # Check model weights for NaN values
+        print("\nChecking model weights for NaN values:")
+        nan_found = False
+        for name, param in model.named_parameters():
+            if torch.isnan(param).any():
+                print(f"Found NaN in {name}")
+                nan_found = True
+            if torch.isinf(param).any():
+                print(f"Found Inf in {name}")
+                nan_found = True
+        if not nan_found:
+            print("No NaN or Inf values found in model weights.")
+            
     print("Model loaded successfully.")
     return model, tokenizer_info, config
 
@@ -173,39 +201,71 @@ def generate_online(model: OnlineTransformer,
                     input_seq[:, 0:-2:2] = generated_so_far  # Even indices for previous chords
                 input_seq[:, 1::2] = melody_prefix     # Odd indices for melody
 
-                # Get model predictions
-                logits = model(input_seq)[:, -1, :]  # Get logits for next token
+                if t == 0 and batch_idx == 0:
+                    print("\nDebug - Input Sequence:")
+                    print(f"Input shape: {input_seq.shape}")
+                    print(f"Input range: [{input_seq.min().item()}, {input_seq.max().item()}]")
+                    print(f"First sequence: {input_seq[0]}")
+                    print(f"Vocab size: {tokenizer_info['total_vocab_size']}")
+                    print(f"Input >= vocab_size: {(input_seq >= tokenizer_info['total_vocab_size']).any().item()}")
+
+                # Create attention mask (1 for tokens, 0 for padding)
+                attention_mask = torch.zeros_like(input_seq, dtype=torch.bool, device=device)  # False = keep, True = mask
                 
-                # Mask out non-chord tokens
+                # Validate input tokens are within vocabulary range
+                if (input_seq >= tokenizer_info['total_vocab_size']).any():
+                    print("WARNING: Input tokens found outside vocabulary range!")
+                    input_seq = torch.clamp(input_seq, 0, tokenizer_info['total_vocab_size'] - 1)
+
+                # Get model predictions with attention mask
+                try:
+                    raw_logits = model(input_seq, padding_mask=attention_mask)
+                    if t == 0 and batch_idx == 0:
+                        print("\nDebug - Raw Model Output:")
+                        print(f"Raw logits shape: {raw_logits.shape}")
+                        print(f"Raw logits range: [{raw_logits.min().item():.2f}, {raw_logits.max().item():.2f}]")
+                        print(f"Any NaN in raw logits: {torch.isnan(raw_logits).any().item()}")
+                        print(f"Attention mask shape: {attention_mask.shape}")
+                        print(f"Attention mask dtype: {attention_mask.dtype}")
+                        print(f"Attention mask sum: {attention_mask.sum().item()}")
+                except Exception as e:
+                    print(f"\nError during model forward pass: {str(e)}")
+                    raise
+
+                logits = raw_logits[:, -1, :]  # Get logits for next token
+
+                # Mask out non-chord tokens and add numerical stability
                 mask = torch.full_like(logits, float('-inf'))
                 mask[:, chord_token_start:chord_token_start + chord_vocab_size] = 0
                 logits = logits + mask
 
-                # Apply top-k filtering
-                if top_k > 0:
-                    top_k_logits, top_k_indices = torch.topk(logits, min(top_k, logits.size(-1)))
-                    filtered_logits = torch.full_like(logits, float('-inf'))
-                    filtered_logits.scatter_(1, top_k_indices, top_k_logits)
-                    logits = filtered_logits
+                # Clip extreme values for numerical stability
+                logits = torch.clamp(logits, min=-100, max=100)
+                
+                # Replace any remaining NaN/Inf values with very negative numbers
+                logits = torch.nan_to_num(logits, nan=float('-1e9'), posinf=100, neginf=-100)
 
                 # Apply temperature scaling
                 logits = logits / temperature
-                
-                # Add debug prints
-                if t == 0 and batch_idx == 0:
-                    print("\nDebug - Logits and Probabilities:")
-                    print(f"Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
-                    print(f"Any NaN in logits: {torch.isnan(logits).any().item()}")
-                
+
                 # Sample new chord tokens
                 probs = torch.softmax(logits, dim=-1)
                 
+                # Verify probability distribution
                 if t == 0 and batch_idx == 0:
+                    print("\nDebug - Probability Distribution:")
                     print(f"Probs sum: {probs.sum(dim=-1)[0].item():.6f}")
                     print(f"Any NaN in probs: {torch.isnan(probs).any().item()}")
                     print(f"Any zeros in probs: {(probs == 0).all(dim=-1).any().item()}")
-                
-                new_chord_tokens = torch.multinomial(probs, num_samples=1)
+                    print(f"Number of non-zero probabilities: {(probs[0] > 0).sum().item()}")
+
+                # Sample from valid probabilities
+                try:
+                    new_chord_tokens = torch.multinomial(probs, num_samples=1)
+                except RuntimeError as e:
+                    print(f"Error during sampling: {e}")
+                    print(f"Probability stats - min: {probs.min().item():.2e}, max: {probs.max().item():.2e}")
+                    raise
 
                 # Update tracking variables
                 current_chords = new_chord_tokens.squeeze(-1)
