@@ -163,6 +163,38 @@ def generate_online(model: OnlineTransformer,
     print(f"Chord vocab size: {chord_vocab_size}")
     print(f"Total vocab size: {tokenizer_info['total_vocab_size']}")
     print(f"Wait frames: {wait_frames}")
+    
+    # Debug token range calculations
+    print(f"\nDebug - Token Range Validation:")
+    print(f"Valid token range: [{chord_token_start}, {tokenizer_info['total_vocab_size'] - 1}]")
+    print(f"Number of chord patterns: {len(tokenizer_info['token_to_chord'])} total, {len(tokenizer_info['token_to_chord']) // 2} unique patterns")
+    print(f"Expected hold token offset: {len(tokenizer_info['token_to_chord']) // 2}")
+    
+    # Check for tokens outside valid range in the mapping
+    invalid_tokens = []
+    max_token_in_mapping = 0
+    for token_str in tokenizer_info['token_to_chord'].keys():
+        token_val = int(token_str)
+        max_token_in_mapping = max(max_token_in_mapping, token_val)
+        if token_val >= tokenizer_info['total_vocab_size']:
+            invalid_tokens.append(token_val)
+    
+    if invalid_tokens:
+        print(f"WARNING: Found {len(invalid_tokens)} tokens in mapping outside valid range: {invalid_tokens}")
+        print("These will be filtered out during generation.")
+    print(f"Highest token in mapping: {max_token_in_mapping}")
+    
+    # Calculate the actual maximum valid chord token for generation
+    max_valid_chord_token = min(tokenizer_info['total_vocab_size'] - 1, max_token_in_mapping)
+    print(f"Maximum valid chord token for generation: {max_valid_chord_token}")
+    
+    # Verify some example tokens from token_to_chord mapping
+    example_tokens = list(tokenizer_info['token_to_chord'].keys())[:5]
+    print(f"Example chord tokens: {example_tokens}")
+    for token_str in example_tokens:
+        token_val = int(token_str)
+        chord_info = tokenizer_info['token_to_chord'][token_str]
+        print(f"  Token {token_val}: {'hold' if chord_info['is_hold'] else 'onset'}")
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Generating online sequences")):
@@ -209,21 +241,40 @@ def generate_online(model: OnlineTransformer,
                     print(f"Vocab size: {tokenizer_info['total_vocab_size']}")
                     print(f"Input >= vocab_size: {(input_seq >= tokenizer_info['total_vocab_size']).any().item()}")
 
+                # Detailed token validation
+                if (input_seq >= tokenizer_info['total_vocab_size']).any():
+                    print("\nWARNING: Input tokens found outside vocabulary range!")
+                    invalid_tokens = input_seq[input_seq >= tokenizer_info['total_vocab_size']]
+                    invalid_positions = torch.where(input_seq >= tokenizer_info['total_vocab_size'])
+                    print(f"Invalid token values: {invalid_tokens}")
+                    print(f"Invalid token positions: {invalid_positions}")
+                    print(f"Generated so far shape: {generated_so_far.shape}")
+                    print(f"Generated so far range: [{generated_so_far.min().item() if generated_so_far.numel() > 0 else 'empty'}, {generated_so_far.max().item() if generated_so_far.numel() > 0 else 'empty'}]")
+                    print(f"Melody prefix range: [{melody_prefix.min().item()}, {melody_prefix.max().item()}]")
+                    
+                    # Check which part of the sequence is causing issues
+                    chord_positions = input_seq[:, 0::2]
+                    melody_positions = input_seq[:, 1::2]
+                    print(f"Chord positions range: [{chord_positions.min().item()}, {chord_positions.max().item()}]")
+                    print(f"Melody positions range: [{melody_positions.min().item()}, {melody_positions.max().item()}]")
+                    
+                    input_seq = torch.clamp(input_seq, 0, tokenizer_info['total_vocab_size'] - 1)
+
                 # Create attention mask (1 for tokens, 0 for padding)
                 attention_mask = torch.zeros_like(input_seq, dtype=torch.bool, device=device)  # False = keep, True = mask
                 
-                # Validate input tokens are within vocabulary range
-                if (input_seq >= tokenizer_info['total_vocab_size']).any():
-                    print("WARNING: Input tokens found outside vocabulary range!")
-                    input_seq = torch.clamp(input_seq, 0, tokenizer_info['total_vocab_size'] - 1)
-
                 # Get model predictions with attention mask
                 raw_logits = model(input_seq, padding_mask=attention_mask)
                 logits = raw_logits[:, -1, :]  # Get logits for next token
 
-                # Mask out non-chord tokens
+                # Mask out non-chord tokens and ensure we stay within chord vocabulary range
                 mask = torch.full_like(logits, float('-inf'))
-                mask[:, chord_token_start:chord_token_start + chord_vocab_size] = 0
+                # Only allow valid chord tokens (from chord_token_start to total_vocab_size - 1)
+                # Also exclude any tokens that might be in the mapping but outside vocab range
+                max_valid_chord_token = min(tokenizer_info['total_vocab_size'] - 1, 
+                                          max([int(t) for t in tokenizer_info['token_to_chord'].keys()]))
+                valid_range = torch.arange(chord_token_start, max_valid_chord_token + 1, device=device)
+                mask[:, valid_range] = 0
                 logits = logits + mask
 
                 # Apply temperature scaling
@@ -231,7 +282,23 @@ def generate_online(model: OnlineTransformer,
 
                 # Sample new chord tokens
                 probs = torch.softmax(logits, dim=-1)
+                # Ensure we only sample from valid chord tokens
                 new_chord_tokens = torch.multinomial(probs, num_samples=1)
+                
+                # Debug: Check if sampled tokens are in valid range
+                if t == 0 and batch_idx == 0:
+                    print(f"\nDebug - Sampled tokens:")
+                    print(f"New chord tokens: {new_chord_tokens.squeeze(-1)}")
+                    print(f"Valid range: [{chord_token_start}, {tokenizer_info['total_vocab_size'] - 1}]")
+                    if (new_chord_tokens >= tokenizer_info['total_vocab_size']).any():
+                        print("WARNING: Sampled tokens outside vocabulary range!")
+                
+                # Safety check: clamp sampled tokens to valid range
+                new_chord_tokens = torch.clamp(
+                    new_chord_tokens,
+                    min=chord_token_start,
+                    max=tokenizer_info['total_vocab_size'] - 1
+                )
 
                 # Determine which sequences need new chords
                 need_new_chord = (chord_durations >= max_chord_frames) | (
@@ -250,14 +317,36 @@ def generate_online(model: OnlineTransformer,
                 hold_mask = ~need_new_chord & ~is_hold_token
                 if hold_mask.any():
                     # Convert onset tokens to hold tokens
-                    # Ensure we stay within vocab range by first mapping to relative position
+                    # Use actual number of chord patterns from tokenizer info
+                    num_chord_patterns = len(tokenizer_info['token_to_chord']) // 2  # Each pattern has onset + hold
                     relative_pos = current_chords[hold_mask] - chord_token_start
-                    hold_offset = chord_vocab_size // 2
-                    current_chords[hold_mask] = chord_token_start + (relative_pos + hold_offset)
+                    # Ensure hold tokens stay within valid range
+                    current_chords[hold_mask] = torch.clamp(
+                        chord_token_start + (relative_pos + num_chord_patterns),
+                        min=chord_token_start,
+                        max=tokenizer_info['total_vocab_size'] - 1
+                    )
                     is_hold_token[hold_mask] = True
+
+                # Final safety check - clamp all tokens to valid range
+                current_chords = torch.clamp(
+                    current_chords,
+                    min=chord_token_start,
+                    max=tokenizer_info['total_vocab_size'] - 1
+                )
                 
                 # Create next token tensor with current chords
                 next_chord_tokens = current_chords.unsqueeze(1)
+                
+                # Debug: Check final token values
+                if t == 0 and batch_idx == 0:
+                    print(f"\nDebug - Final tokens for timestep {t}:")
+                    print(f"Current chords: {current_chords}")
+                    print(f"Next chord tokens shape: {next_chord_tokens.shape}")
+                    print(f"All tokens in valid range: {torch.all((next_chord_tokens >= chord_token_start) & (next_chord_tokens < tokenizer_info['total_vocab_size']))}")
+                    if torch.any(next_chord_tokens >= tokenizer_info['total_vocab_size']):
+                        print("ERROR: Final tokens outside vocabulary range!")
+                        print(f"Invalid tokens: {next_chord_tokens[next_chord_tokens >= tokenizer_info['total_vocab_size']]}")
                 
                 # Increment durations
                 chord_durations += 1

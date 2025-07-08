@@ -186,10 +186,23 @@ def generate_offline(model: OfflineTeacherModel,
                 # For continuing chords, use hold tokens
                 hold_mask = ~need_new_chord & ~is_hold_token
                 if hold_mask.any():
-                    # Convert onset tokens to hold tokens by adding chord_vocab_size/2
-                    hold_offset = chord_vocab_size // 2
-                    current_chords[hold_mask] = current_chords[hold_mask] + hold_offset
+                    # Convert onset tokens to hold tokens using actual number of chord patterns
+                    num_chord_patterns = len(tokenizer_info['token_to_chord']) // 2  # Each pattern has onset + hold
+                    relative_pos = current_chords[hold_mask] - chord_token_start
+                    # Ensure hold tokens stay within valid range
+                    current_chords[hold_mask] = torch.clamp(
+                        chord_token_start + (relative_pos + num_chord_patterns),
+                        min=chord_token_start,
+                        max=tokenizer_info['total_vocab_size'] - 1
+                    )
                     is_hold_token[hold_mask] = True
+                
+                # Final safety check - clamp all tokens to valid range
+                current_chords = torch.clamp(
+                    current_chords,
+                    min=chord_token_start,
+                    max=tokenizer_info['total_vocab_size'] - 1
+                )
                 
                 # Create next token tensor with current chords
                 next_chord_tokens = current_chords.unsqueeze(1)
