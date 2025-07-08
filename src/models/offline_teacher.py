@@ -23,11 +23,13 @@ class OfflineTeacherEmbeddings(nn.Module):
         self._init_embeddings()
         
     def _init_embeddings(self):
-        """Initialize embeddings with small random values"""
-        nn.init.normal_(self.melody_embedding.weight, mean=0, std=0.02)
-        nn.init.normal_(self.chord_embedding.weight, mean=0, std=0.02)
-        nn.init.normal_(self.encoder_position.weight, mean=0, std=0.02)
-        nn.init.normal_(self.decoder_position.weight, mean=0, std=0.02)
+        """Initialize embeddings with proper scaling"""
+        # Initialize embeddings with 1/sqrt(d) scaling
+        std = 1.0 / math.sqrt(self.embed_dim)
+        nn.init.normal_(self.melody_embedding.weight, mean=0, std=std)
+        nn.init.normal_(self.chord_embedding.weight, mean=0, std=std)
+        nn.init.normal_(self.encoder_position.weight, mean=0, std=std)
+        nn.init.normal_(self.decoder_position.weight, mean=0, std=std)
     
     def encode_melody(self, melody_tokens):
         """Embed melody tokens for encoder"""
@@ -156,6 +158,21 @@ class DecoderBlock(nn.Module):
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.norm3 = nn.LayerNorm(embed_dim)
+        
+        # Initialize layer norms
+        nn.init.constant_(self.norm1.weight, 1.0)
+        nn.init.constant_(self.norm1.bias, 0.0)
+        nn.init.constant_(self.norm2.weight, 1.0)
+        nn.init.constant_(self.norm2.bias, 0.0)
+        nn.init.constant_(self.norm3.weight, 1.0)
+        nn.init.constant_(self.norm3.bias, 0.0)
+        
+        # Initialize feedforward
+        nn.init.normal_(self.feedforward[0].weight, mean=0, std=1.0/math.sqrt(embed_dim))
+        nn.init.zeros_(self.feedforward[0].bias)
+        nn.init.normal_(self.feedforward[2].weight, mean=0, std=1.0/math.sqrt(feedforward_dim))
+        nn.init.zeros_(self.feedforward[2].bias)
+        
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, decoder_input, encoder_outputs, decoder_mask=None, encoder_mask=None):

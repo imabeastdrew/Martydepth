@@ -6,6 +6,7 @@ Discriminative Reward Model for classifying melody-chord pairs.
 import torch
 import torch.nn as nn
 from typing import Optional
+import math
 
 class DiscriminativeRewardModel(nn.Module):
     """
@@ -28,6 +29,12 @@ class DiscriminativeRewardModel(nn.Module):
         
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(max_seq_length + 1, embed_dim)
+        
+        # Initialize embeddings with proper scaling
+        std = 1.0 / math.sqrt(embed_dim)
+        nn.init.normal_(self.token_embedding.weight, mean=0, std=std)
+        nn.init.normal_(self.position_embedding.weight, mean=0, std=std)
+        
         self.pad_token_id = pad_token_id
         self.scale_factor = scale_factor
         self.fragment_length = int(max_seq_length * scale_factor)
@@ -38,14 +45,30 @@ class DiscriminativeRewardModel(nn.Module):
             dim_feedforward=4 * embed_dim,
             dropout=dropout,
             batch_first=True,
-            norm_first=True
+            norm_first=False  # Use Post-LN for initial stability
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Initialize transformer layer norms
+        for layer in self.transformer.layers:
+            nn.init.constant_(layer.norm1.weight, 1.0)
+            nn.init.constant_(layer.norm1.bias, 0.0)
+            nn.init.constant_(layer.norm2.weight, 1.0)
+            nn.init.constant_(layer.norm2.bias, 0.0)
+            # Initialize feedforward layers
+            nn.init.normal_(layer.linear1.weight, mean=0, std=1.0/math.sqrt(embed_dim))
+            nn.init.zeros_(layer.linear1.bias)
+            nn.init.normal_(layer.linear2.weight, mean=0, std=1.0/math.sqrt(4 * embed_dim))
+            nn.init.zeros_(layer.linear2.bias)
         
         self.dropout = nn.Dropout(dropout)
         
         # Classification head
         self.classification_head = nn.Linear(embed_dim, 1)
+        # Initialize classification head
+        nn.init.normal_(self.classification_head.weight, mean=0, std=1.0/math.sqrt(embed_dim))
+        nn.init.zeros_(self.classification_head.bias)
+        
         self.max_seq_length = max_seq_length
 
     def get_sliding_windows(self, tokens: torch.Tensor) -> torch.Tensor:

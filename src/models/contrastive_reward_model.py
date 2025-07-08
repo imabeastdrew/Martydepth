@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+import math
 
 class Encoder(nn.Module):
     """A transformer encoder module with embedding."""
@@ -23,15 +24,33 @@ class Encoder(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(max_seq_length + 1, embed_dim)
         
+        # Initialize embeddings with proper scaling
+        std = 1.0 / math.sqrt(embed_dim)
+        nn.init.normal_(self.token_embedding.weight, mean=0, std=std)
+        nn.init.normal_(self.position_embedding.weight, mean=0, std=std)
+        
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
             dim_feedforward=4 * embed_dim,
             dropout=dropout,
             batch_first=True,
-            norm_first=True, # Using pre-norm for stability
+            norm_first=False,  # Use Post-LN for initial stability
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Initialize transformer layer norms
+        for layer in self.transformer.layers:
+            nn.init.constant_(layer.norm1.weight, 1.0)
+            nn.init.constant_(layer.norm1.bias, 0.0)
+            nn.init.constant_(layer.norm2.weight, 1.0)
+            nn.init.constant_(layer.norm2.bias, 0.0)
+            # Initialize feedforward layers
+            nn.init.normal_(layer.linear1.weight, mean=0, std=1.0/math.sqrt(embed_dim))
+            nn.init.zeros_(layer.linear1.bias)
+            nn.init.normal_(layer.linear2.weight, mean=0, std=1.0/math.sqrt(4 * embed_dim))
+            nn.init.zeros_(layer.linear2.bias)
+        
         self.dropout = nn.Dropout(dropout)
         self.max_seq_length = max_seq_length
 
