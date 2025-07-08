@@ -40,6 +40,20 @@ class OnlineTransformer(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(max_seq_length + 1, embed_dim)
         
+        # Initialize embeddings with normal distribution scaled by 1/sqrt(embed_dim)
+        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=1.0 / math.sqrt(embed_dim))
+        nn.init.normal_(self.position_embedding.weight, mean=0.0, std=1.0 / math.sqrt(embed_dim))
+        
+        # Layer normalization layers
+        self.pre_transformer_norm = nn.LayerNorm(embed_dim)
+        self.final_norm = nn.LayerNorm(embed_dim)
+        
+        # Initialize layer norms
+        nn.init.constant_(self.pre_transformer_norm.weight, 1.0)
+        nn.init.constant_(self.pre_transformer_norm.bias, 0.0)
+        nn.init.constant_(self.final_norm.weight, 1.0)
+        nn.init.constant_(self.final_norm.bias, 0.0)
+        
         # Transformer layers
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
@@ -47,12 +61,16 @@ class OnlineTransformer(nn.Module):
             dim_feedforward=4 * embed_dim,  # 2048 for embed_dim=512
             dropout=dropout,
             batch_first=True,
-            norm_first=True  # Use Pre-LN for stability
+            norm_first=False  # Use Post-LN initially for better stability
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
         # Single output head for next token prediction
         self.output_head = nn.Linear(embed_dim, vocab_size)
+        
+        # Initialize output head
+        nn.init.normal_(self.output_head.weight, mean=0.0, std=1.0 / math.sqrt(embed_dim))
+        nn.init.zeros_(self.output_head.bias)
         
         # Dropout
         self.dropout = nn.Dropout(dropout)
@@ -90,48 +108,22 @@ class OnlineTransformer(nn.Module):
         safe_tokens = tokens.clone()
         safe_tokens[safe_tokens >= self.vocab_size] = 0  # Clamp to valid range
         token_embeds = self.token_embedding(safe_tokens)
-        
-        # Scale embeddings for better gradient flow
-        token_embeds = token_embeds * math.sqrt(self.embed_dim)
-        
         pos_embeds = self.position_embedding(positions)
         
         # Combine embeddings
         x = token_embeds + pos_embeds
         
-        # Create layer norm layers
-        layer_norm = nn.LayerNorm(self.embed_dim, device=tokens.device)
-        x = layer_norm(x)
+        # Apply pre-transformer normalization and dropout
+        x = self.pre_transformer_norm(x)
         x = self.dropout(x)
         
-        try:
-            # Apply transformer with gradient clipping
-            with torch.set_grad_enabled(self.training):  # Only track gradients during training
-                x = self.transformer(x, mask=causal_mask, src_key_padding_mask=padding_mask)
-                
-                # Add stability checks after each major operation
-                if torch.isnan(x).any():
-                    print("WARNING: NaN detected in transformer output")
-                    x = torch.nan_to_num(x, nan=0.0)
-                elif torch.isinf(x).any():
-                    print("WARNING: Inf detected in transformer output")
-                    x = torch.nan_to_num(x, posinf=1e4, neginf=-1e4)
-                
-                # Get predictions with bounded output
-                x = layer_norm(x)  # Use same layer norm
-                if torch.isnan(x).any() or torch.isinf(x).any():
-                    print("WARNING: NaN/Inf detected after layer norm")
-                    x = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
-                
-                logits = self.output_head(x)
-                
-                # Clip extreme values
-                logits = torch.clamp(logits, min=-100, max=100)
-                
-        except RuntimeError as e:
-            print(f"Error in transformer forward pass: {e}")
-            raise
-            
+        # Apply transformer
+        x = self.transformer(x, mask=causal_mask, src_key_padding_mask=padding_mask)
+        
+        # Final layer norm and output projection
+        x = self.final_norm(x)
+        logits = self.output_head(x)
+        
         return logits
 
 if __name__ == "__main__":
