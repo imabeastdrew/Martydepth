@@ -24,7 +24,7 @@ except ImportError:
 from src.data.dataset import create_dataloader
 from src.models.contrastive_reward_model import ContrastiveRewardModel
 from src.models.discriminative_reward_model import DiscriminativeRewardModel
-from src.models.offline_teacher import OfflineTeacherModel
+from src.models.offline_teacher_t5 import T5OfflineTeacherModel
 from src.config.tokenization_config import (
     CHORD_TOKEN_START, CHORD_SILENCE_TOKEN, SILENCE_TOKEN, PAD_TOKEN
 )

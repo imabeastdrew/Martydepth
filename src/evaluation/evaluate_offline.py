@@ -13,7 +13,7 @@ import numpy as np
 from typing import Dict
 from tqdm import tqdm
 
-from src.models.offline_teacher import OfflineTeacherModel
+from src.models.offline_teacher_t5 import T5OfflineTeacherModel
 from src.data.dataset import create_dataloader
 from src.evaluation.metrics import (
     calculate_harmony_metrics,
@@ -79,7 +79,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         max_seq_length = config.get('max_seq_length') or config.get('max_sequence_length') or 256
         print(f"Using max_seq_length: {max_seq_length}")
 
-        model = OfflineTeacherModel(
+        model = T5OfflineTeacherModel(
             melody_vocab_size=config['melody_vocab_size'],
             chord_vocab_size=config['chord_vocab_size'],
             embed_dim=config['embed_dim'],
@@ -87,7 +87,8 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
             num_layers=config['num_layers'],
             dropout=config['dropout'],
             max_seq_length=max_seq_length,
-            pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
+            pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN),
+            total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)  # Use unified vocabulary
         ).to(device)
         
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
@@ -98,7 +99,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
     print("Offline model loaded successfully.")
     return model, config, tokenizer_info
 
-def generate_offline(model: OfflineTeacherModel,
+def generate_offline(model: T5OfflineTeacherModel,
                      dataloader: torch.utils.data.DataLoader,
                      tokenizer_info: Dict,
                      device: torch.device,
@@ -153,8 +154,11 @@ def generate_offline(model: OfflineTeacherModel,
             is_hold_token = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
             for t in range(seq_length):
-                # Get model predictions
-                logits = model(melody_tokens, generated_so_far)[:, -1, :]
+                # Get model predictions using T5 model interface
+                logits = model(
+                    melody_tokens=melody_tokens,
+                    chord_tokens=generated_so_far
+                )[:, -1, :]
                 
                 # Determine which sequences need new chords
                 need_new_chord = (chord_durations >= max_chord_frames) | (
