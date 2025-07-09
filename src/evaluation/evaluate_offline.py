@@ -134,6 +134,7 @@ def generate_offline(model: OfflineTeacherModel,
     chord_token_start = melody_vocab_size + 1  # After PAD token
     chord_silence_token = chord_token_start  # First chord token is silence
     chord_vocab_size = tokenizer_info['chord_vocab_size']
+    pad_token_id = tokenizer_info.get('pad_token_id', PAD_TOKEN)
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
@@ -143,8 +144,8 @@ def generate_offline(model: OfflineTeacherModel,
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
             
-            # Start with silence tokens
-            generated_so_far = torch.full((batch_size, 1), chord_silence_token, device=device)
+            # Start with PAD token (T5 standard, matching training)
+            generated_so_far = torch.full((batch_size, 1), pad_token_id, device=device)
             
             # Track current chord and its duration for each sequence in batch
             current_chords = torch.full((batch_size,), chord_silence_token, device=device)

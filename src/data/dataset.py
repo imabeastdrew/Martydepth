@@ -102,11 +102,11 @@ class FrameDataset(Dataset):
         melody_tokens = torch.tensor(sequence.melody_tokens, dtype=torch.long)
         chord_tokens = torch.tensor(sequence.chord_tokens, dtype=torch.long)
         
-        # The chord sequence is shifted by one position for teacher forcing.
-        # The model receives the full melody, the chord sequence up to the
+        # Use PAD token as start token for teacher forcing (T5 standard).
+        # The model receives the full melody, PAD token + chord sequence up to the
         # second-to-last token, and predicts the chord sequence from the
-        # second token onwards.
-        chord_input = torch.cat([torch.tensor([self.tokenizer_info['chord_token_start']]), chord_tokens[:-1]])
+        # first token onwards.
+        chord_input = torch.cat([torch.tensor([self.pad_token_id]), chord_tokens[:-1]])
 
         return {
             'melody_tokens': melody_tokens,           # [T] - full melody sequence

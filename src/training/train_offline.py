@@ -13,7 +13,7 @@ import yaml
 from tqdm import tqdm
 from transformers import Adafactor
 
-from src.models.offline_teacher import OfflineTeacherModel
+from src.models.offline_teacher_t5 import T5OfflineTeacherModel
 from src.data.dataset import create_dataloader
 from src.training.utils.logging import log_model_artifact
 from src.training.utils.schedulers import get_warmup_schedule
@@ -64,7 +64,7 @@ def main(config: dict):
     config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
     
     # --- Model, Optimizer, Scheduler ---
-    model = OfflineTeacherModel(
+    model = T5OfflineTeacherModel(
         melody_vocab_size=config['melody_vocab_size'],
         chord_vocab_size=config['chord_vocab_size'],
         embed_dim=config['embed_dim'],
@@ -113,7 +113,7 @@ def main(config: dict):
             
             print("2. Testing model initialization...")
             # Create model with minimal config
-            smoke_model = OfflineTeacherModel(
+            smoke_model = T5OfflineTeacherModel(
                 melody_vocab_size=config['melody_vocab_size'],
                 chord_vocab_size=config['chord_vocab_size'],
                 embed_dim=config['embed_dim'],
