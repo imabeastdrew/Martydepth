@@ -326,31 +326,38 @@ def generate_online(model: OnlineTransformer,
                     max=tokenizer_info['total_vocab_size'] - 1
                 )
 
-                # Determine which sequences need new chords
-                need_new_chord = (chord_durations >= max_chord_frames) | (
-                    (chord_durations >= min_chord_frames) & 
-                    (torch.rand(batch_size, device=device) < change_prob)  # Configurable change probability
-                )
-                
-                # For sequences that need new chords, sample from the distribution
-                if need_new_chord.any():
-                    # Update current chords and reset durations for changed sequences
-                    current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)[need_new_chord]
-                    chord_durations[need_new_chord] = 0
-                    is_hold_token[need_new_chord] = False
-                
-                # For continuing chords, use hold tokens
-                hold_mask = ~need_new_chord & ~is_hold_token
-                if hold_mask.any():
-                    # Convert onset tokens to hold tokens
-                    # Based on ChordTokenizer: hold_token = onset_token + num_onset_patterns
-                    num_onset_patterns = len(tokenizer_info['token_to_chord']) // 2  # Half are onset, half are hold
-                    current_chords[hold_mask] = torch.clamp(
-                        current_chords[hold_mask] + num_onset_patterns,
-                        min=chord_token_start,
-                        max=tokenizer_info['total_vocab_size'] - 1
+                # On first timestep, always use new chords
+                if t == 0:
+                    # First timestep - always use new chords for all sequences
+                    current_chords = new_chord_tokens.squeeze(-1)
+                    chord_durations = torch.zeros(batch_size, device=device)
+                    is_hold_token = torch.zeros(batch_size, dtype=torch.bool, device=device)
+                else:
+                    # Determine which sequences need new chords
+                    need_new_chord = (chord_durations >= max_chord_frames) | (
+                        (chord_durations >= min_chord_frames) & 
+                        (torch.rand(batch_size, device=device) < change_prob)  # Configurable change probability
                     )
-                    is_hold_token[hold_mask] = True
+                    
+                    # For sequences that need new chords, sample from the distribution
+                    if need_new_chord.any():
+                        # Update current chords and reset durations for changed sequences
+                        current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)[need_new_chord]
+                        chord_durations[need_new_chord] = 0
+                        is_hold_token[need_new_chord] = False
+                    
+                    # For continuing chords, use hold tokens
+                    hold_mask = ~need_new_chord & ~is_hold_token
+                    if hold_mask.any():
+                        # Convert onset tokens to hold tokens
+                        # Based on ChordTokenizer: hold_token = onset_token + num_onset_patterns
+                        num_onset_patterns = len(tokenizer_info['token_to_chord']) // 2  # Half are onset, half are hold
+                        current_chords[hold_mask] = torch.clamp(
+                            current_chords[hold_mask] + num_onset_patterns,
+                            min=chord_token_start,
+                            max=tokenizer_info['total_vocab_size'] - 1
+                        )
+                        is_hold_token[hold_mask] = True
 
                 # Final safety check - clamp all tokens to valid range
                 current_chords = torch.clamp(
@@ -381,15 +388,33 @@ def generate_online(model: OnlineTransformer,
             # Collect results for the batch
             # Create full interleaved sequences (melody + chord tokens) for evaluation
             for i in range(batch_size):
-                chord_sequence = generated_so_far[i, 1:].cpu().numpy()  # Skip first token (silence)
+                chord_sequence = generated_so_far[i].cpu().numpy()  # Keep all generated chord tokens
                 melody_sequence = melody_tokens[i].cpu().numpy()
                 
+                # Ensure both sequences have the same length
+                min_length = min(len(chord_sequence), len(melody_sequence))
+                chord_sequence = chord_sequence[:min_length]
+                melody_sequence = melody_sequence[:min_length]
+                
                 # Create interleaved sequence: [chord_0, melody_0, chord_1, melody_1, ...]
-                full_sequence = np.zeros(len(chord_sequence) + len(melody_sequence), dtype=np.int64)
+                full_sequence = np.zeros(2 * min_length, dtype=np.int64)
                 full_sequence[0::2] = chord_sequence  # Even indices for chords
                 full_sequence[1::2] = melody_sequence  # Odd indices for melody
                 
                 generated_sequences.append(full_sequence)
+
+    # Debug output for the first batch
+    if len(generated_sequences) > 0:
+        print(f"\nDebug - Generated Sequences Format:")
+        print(f"Number of sequences: {len(generated_sequences)}")
+        print(f"First sequence length: {len(generated_sequences[0])}")
+        print(f"First sequence sample: {generated_sequences[0][:10]}")
+        print(f"Token range: [{min(generated_sequences[0])}, {max(generated_sequences[0])}]")
+        
+    if len(ground_truth_sequences) > 0:
+        print(f"\nDebug - Ground Truth Format:")
+        print(f"First GT sequence length: {len(ground_truth_sequences[0])}")
+        print(f"First GT sequence sample: {ground_truth_sequences[0][:10]}")
 
     return generated_sequences, ground_truth_sequences
 
