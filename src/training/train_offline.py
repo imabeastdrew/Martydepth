@@ -72,7 +72,8 @@ def main(config: dict):
         num_layers=config['num_layers'],
         dropout=config['dropout'],
         max_seq_length=config['max_sequence_length'],
-        pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
+        pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN),
+        total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)  # Use unified vocabulary
     ).to(device)
 
     optimizer = Adafactor(
@@ -191,7 +192,7 @@ def main(config: dict):
             )
             
             loss = nn.functional.cross_entropy(
-                logits.reshape(-1, config['chord_vocab_size']),
+                logits.reshape(-1, model.total_vocab_size),
                 batch['chord_target'].reshape(-1),
                 ignore_index=model.pad_token_id
             )
@@ -230,7 +231,7 @@ def main(config: dict):
                 )
                 
                 loss = nn.functional.cross_entropy(
-                    logits.reshape(-1, config['chord_vocab_size']),
+                    logits.reshape(-1, model.total_vocab_size),
                     batch['chord_target'].reshape(-1),
                     ignore_index=model.pad_token_id
                 )

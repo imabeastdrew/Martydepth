@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import math
 from transformers import T5Config, T5ForConditionalGeneration
 from typing import Optional
+from src.config.tokenization_config import CHORD_TOKEN_START
 
 class T5OfflineTeacherModel(nn.Module):
     """T5-based offline teacher model with proper relative position embeddings"""
@@ -17,7 +18,8 @@ class T5OfflineTeacherModel(nn.Module):
                  feedforward_dim: int = 2048,
                  dropout: float = 0.1,
                  max_seq_length: int = 256,
-                 pad_token_id: int = 178):
+                 pad_token_id: int = 178,
+                 total_vocab_size: Optional[int] = None):
         super().__init__()
         
         self.melody_vocab_size = melody_vocab_size
@@ -25,9 +27,14 @@ class T5OfflineTeacherModel(nn.Module):
         self.embed_dim = embed_dim
         self.pad_token_id = pad_token_id
         
+        # Store total vocabulary size
+        if total_vocab_size is None:
+            total_vocab_size = 4779  # Based on tokenizer info: covers 0-4778
+        self.total_vocab_size = total_vocab_size
+        
         # Create T5 config
         self.config = T5Config(
-            vocab_size=max(melody_vocab_size, chord_vocab_size),  # Use larger vocab
+            vocab_size=total_vocab_size,  # Must cover all possible token IDs
             d_model=embed_dim,
             d_kv=embed_dim // num_heads,  # Key/value dimension per head
             d_ff=feedforward_dim,
@@ -47,46 +54,10 @@ class T5OfflineTeacherModel(nn.Module):
             decoder_start_token_id=pad_token_id,  # Start decoder with PAD (as we discussed)
         )
         
-        # Create the T5 model
+        # Create the T5 model with unified vocabulary (standard T5 approach)
         self.t5_model = T5ForConditionalGeneration(config=self.config)
         
-        # Separate input/output embeddings for melody and chords
-        # We'll map our vocabulary to T5's vocabulary space
-        self.melody_input_projection = nn.Linear(melody_vocab_size, embed_dim, bias=False)
-        self.chord_input_projection = nn.Linear(chord_vocab_size, embed_dim, bias=False)
-        self.chord_output_projection = nn.Linear(embed_dim, chord_vocab_size, bias=False)
-        
-        # Initialize T5 with proper scaling
-        self._init_t5_weights()
-        
-    def _init_t5_weights(self):
-        """Initialize T5 weights with proper scaling"""
-        # T5 uses specific initialization
-        self.t5_model.apply(self._init_weights)
-        
-        # Initialize our projection layers
-        std = 1.0 / math.sqrt(self.embed_dim)
-        nn.init.normal_(self.melody_input_projection.weight, mean=0, std=std)
-        nn.init.normal_(self.chord_input_projection.weight, mean=0, std=std)
-        nn.init.normal_(self.chord_output_projection.weight, mean=0, std=std)
-    
-    def _init_weights(self, module):
-        """Initialize T5 module weights"""
-        if isinstance(module, (nn.Linear, nn.Embedding)):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_factor * 1.0)
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-        if isinstance(module, nn.Linear) and module.bias is not None:
-            module.bias.data.zero_()
-    
-    def create_one_hot_embeddings(self, tokens: torch.Tensor, vocab_size: int) -> torch.Tensor:
-        """Convert token indices to one-hot embeddings"""
-        batch_size, seq_len = tokens.shape
-        # Create one-hot vectors
-        one_hot = torch.zeros(batch_size, seq_len, vocab_size, device=tokens.device, dtype=torch.float32)
-        one_hot.scatter_(2, tokens.unsqueeze(-1), 1.0)
-        return one_hot
+        # No separate projections needed - T5 handles unified vocabulary internally
     
     def forward(self,
                 melody_tokens: torch.Tensor,
@@ -94,7 +65,7 @@ class T5OfflineTeacherModel(nn.Module):
                 melody_mask: Optional[torch.Tensor] = None,
                 chord_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass through T5 model
+        Forward pass through T5 model with unified vocabulary
         
         Args:
             melody_tokens: [batch, melody_seq_len] - encoder input
@@ -103,58 +74,34 @@ class T5OfflineTeacherModel(nn.Module):
             chord_mask: [batch, chord_seq_len] - decoder attention mask
         
         Returns:
-            logits: [batch, chord_seq_len, chord_vocab_size]
+            logits: [batch, chord_seq_len, total_vocab_size]
         """
-        batch_size = melody_tokens.shape[0]
-        
         # Create attention masks if not provided
         if melody_mask is None:
-            melody_mask = (melody_tokens != self.pad_token_id).long()
+            melody_mask = (melody_tokens != self.pad_token_id)
         if chord_mask is None:
-            chord_mask = (chord_tokens != self.pad_token_id).long()
+            chord_mask = (chord_tokens != self.pad_token_id)
         
-        # Convert tokens to one-hot embeddings then project to T5 embedding space
-        melody_one_hot = self.create_one_hot_embeddings(melody_tokens, self.melody_vocab_size)
-        chord_one_hot = self.create_one_hot_embeddings(chord_tokens, self.chord_vocab_size)
-        
-        # Project to T5 embedding dimension
-        melody_embeds = self.melody_input_projection(melody_one_hot)  # [batch, seq, embed_dim]
-        chord_embeds = self.chord_input_projection(chord_one_hot)     # [batch, seq, embed_dim]
-        
-        # Run through T5
+        # Use standard T5 forward pass with token IDs directly
         outputs = self.t5_model(
-            inputs_embeds=melody_embeds,
+            input_ids=melody_tokens,
             attention_mask=melody_mask,
-            decoder_inputs_embeds=chord_embeds,
+            decoder_input_ids=chord_tokens,
             decoder_attention_mask=chord_mask,
             return_dict=True
         )
         
-        # T5ForConditionalGeneration already provides logits, but they're for the T5 vocab
-        # We need to get the decoder hidden states and project to our chord vocab
-        decoder_outputs = self.t5_model.decoder(
-            inputs_embeds=chord_embeds,
-            attention_mask=chord_mask,
-            encoder_hidden_states=outputs.encoder_last_hidden_state,
-            encoder_attention_mask=melody_mask,
-            return_dict=True
-        )
-        
-        # Project T5 decoder output back to chord vocabulary
-        logits = self.chord_output_projection(decoder_outputs.last_hidden_state)
-        
-        return logits
+        # T5 outputs logits over the full vocabulary
+        return outputs.logits
     
     def encode(self, melody_tokens: torch.Tensor, melody_mask: Optional[torch.Tensor] = None):
         """Encode melody using T5 encoder only"""
         if melody_mask is None:
-            melody_mask = (melody_tokens != self.pad_token_id).long()
+            melody_mask = (melody_tokens != self.pad_token_id)
         
-        melody_one_hot = self.create_one_hot_embeddings(melody_tokens, self.melody_vocab_size)
-        melody_embeds = self.melody_input_projection(melody_one_hot)
-        
+        # Use standard T5 encoder with token IDs directly
         encoder_outputs = self.t5_model.encoder(
-            inputs_embeds=melody_embeds,
+            input_ids=melody_tokens,
             attention_mask=melody_mask,
             return_dict=True
         )
@@ -166,27 +113,19 @@ class T5OfflineTeacherModel(nn.Module):
                     encoder_mask: torch.Tensor,
                     chord_tokens: torch.Tensor) -> torch.Tensor:
         """Single decoder step for generation"""
-        chord_one_hot = self.create_one_hot_embeddings(chord_tokens, self.chord_vocab_size)
-        chord_embeds = self.chord_input_projection(chord_one_hot)
+        decoder_mask = (chord_tokens != self.pad_token_id)
         
-        decoder_mask = (chord_tokens != self.pad_token_id).long()
-        
-        # Create encoder outputs structure for T5
-        encoder_outputs = type('EncoderOutputs', (), {
-            'last_hidden_state': encoder_hidden,
-            'hidden_states': None,
-            'attentions': None
-        })()
-        
+        # Use standard T5 decoder with token IDs directly
         outputs = self.t5_model.decoder(
-            inputs_embeds=chord_embeds,
+            input_ids=chord_tokens,
             attention_mask=decoder_mask,
             encoder_hidden_states=encoder_hidden,
             encoder_attention_mask=encoder_mask,
             return_dict=True
         )
         
-        logits = self.chord_output_projection(outputs.last_hidden_state)
+        # Apply the language modeling head to get logits over full vocabulary
+        logits = self.t5_model.lm_head(outputs.last_hidden_state)
         return logits
     
     def count_parameters(self):
@@ -199,6 +138,7 @@ class T5OfflineTeacherModel(nn.Module):
         """Get model architecture information"""
         return {
             'model_type': 'T5-based Offline Teacher',
+            'total_vocab_size': self.total_vocab_size,
             'melody_vocab_size': self.melody_vocab_size,
             'chord_vocab_size': self.chord_vocab_size,
             'embed_dim': self.embed_dim,
@@ -218,10 +158,11 @@ def _test_t5_model():
     print("Testing T5-based Offline Teacher Model...")
     
     # Test parameters - Updated for 1/16th note resolution dataset  
-    # Note: vocab_size must be > max_token_id, so pad_token_id=178 requires vocab_size >= 179
-    melody_vocab_size = 179  # Must include PAD token 178 (0-178 = 179 tokens)
-    chord_vocab_size = 4601  # Must include PAD token 178 (178 + 4600 chord tokens = 4601)
-    pad_token_id = 178       # Actual PAD token from dataset
+    # Note: vocab_size must be > max_token_id, so total_vocab_size must cover all possible tokens
+    melody_vocab_size = 178   # Melody tokens: 0-177
+    chord_vocab_size = 4600   # Chord tokens: 179-4778 (4600 tokens)
+    total_vocab_size = 4779   # Must cover all possible token IDs (0-4778)
+    pad_token_id = 178        # Actual PAD token from dataset
     batch_size = 2
     melody_seq_len = 256
     chord_seq_len = 256
@@ -235,7 +176,8 @@ def _test_t5_model():
         feedforward_dim=2048,
         dropout=0.1,
         max_seq_length=256,
-        pad_token_id=pad_token_id
+        pad_token_id=pad_token_id,
+        total_vocab_size=total_vocab_size
     )
     
     print("\nModel info:")
@@ -275,7 +217,7 @@ def _test_t5_model():
     with torch.no_grad():
         logits = model(melody_tokens, chord_input_tokens)
         print(f"\nOutput shape: {logits.shape}")
-        print(f"Expected: [{batch_size}, {chord_seq_len}, {chord_vocab_size}]")
+        print(f"Expected: [{batch_size}, {chord_seq_len}, {total_vocab_size}]")
         
         # Test encode-decode separately
         encoder_hidden, encoder_mask = model.encode(melody_tokens)
