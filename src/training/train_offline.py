@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import LambdaLR
 import wandb
 import yaml
 from tqdm import tqdm
-from transformers import Adafactor
+# from transformers import Adafactor  # Switched to Adam
 
 from src.models.offline_teacher_t5 import T5OfflineTeacherModel
 from src.data.dataset import create_dataloader
@@ -76,11 +76,10 @@ def main(config: dict):
         total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)  # Use unified vocabulary
     ).to(device)
 
-    optimizer = Adafactor(
+    optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config['learning_rate'],
-        scale_parameter=False,
-        relative_step=False
+        weight_decay=config.get('weight_decay', 0.01)
     )
     
     scheduler = get_warmup_schedule(optimizer, num_warmup_steps=config['warmup_steps'])
@@ -144,11 +143,10 @@ def main(config: dict):
                 )
             
             print("4. Testing optimizer creation...")
-            smoke_optimizer = Adafactor(
+            smoke_optimizer = torch.optim.Adam(
                 smoke_model.parameters(),
                 lr=config['learning_rate'],
-                scale_parameter=False,
-                relative_step=False
+                weight_decay=config.get('weight_decay', 0.01)
             )
             
             # Clean up
