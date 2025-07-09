@@ -104,8 +104,8 @@ def generate_offline(model: OfflineTeacherModel,
                      device: torch.device,
                      temperature: float = 1.0,
                      top_k: int = 50,
-                     min_chord_frames: int = 2,
-                     max_chord_frames: int = 32,
+                     min_chord_frames: int = 8,    # 2 beats at 4 frames per beat
+                     max_chord_frames: int = 128,  # 32 beats at 4 frames per beat
                      change_prob: float = 0.3) -> tuple[list, list]:
     """
     Generate chord sequences for given melodies using the offline model.

@@ -282,13 +282,19 @@ class MIDITokenizer:
         return midi_note, is_onset
 
 class FramePreprocessor:
+    """Frame-based preprocessor that converts songs to sixteenth-note resolution sequences.
+    
+    Uses 4 frames per beat to capture sub-beat timing and properly implements
+    onset/hold token logic for both melody and chords based on fractional timing data.
+    This enables much higher chord length entropy and better rhythmic precision.
+    """
     def __init__(self, sequence_length: int = 256):
         self.sequence_length = sequence_length
         self.chord_tokenizer = ChordTokenizer()
         self.melody_tokenizer = MIDITokenizer()
         
     def convert_song_to_frames(self, song_data: Dict) -> Tuple[List[int], List[int]]:
-        """Convert song data to frame sequences.
+        """Convert song data to frame sequences using sixteenth-note resolution.
         
         Args:
             song_data (dict): Raw song data
@@ -300,10 +306,13 @@ class FramePreprocessor:
         if not annotations:
             return [], []
             
-        num_beats = int(annotations.get('num_beats', 0))
+        num_beats = annotations.get('num_beats', 0)
         if num_beats == 0:
             return [], []
             
+        # Convert to sixteenth-note resolution (4 frames per beat)
+        num_frames = int(num_beats * 4)
+        
         melody_seq = []
         chord_seq = []
         
@@ -314,64 +323,88 @@ class FramePreprocessor:
         if not melody_data or not harmony_data:
             return [], []
         
-        # Track the current note for hold tokens
+        # Track current active notes/chords for hold token logic
         current_melody_note = None
-        current_melody_onset = -1
+        current_melody_onset_frame = -1
+        current_chord_data = None
+        current_chord_onset_frame = -1
         has_invalid_notes = False
         
-        # Create beat-aligned sequences
-        for beat_idx in range(num_beats):
-            # Find melody note for this beat
+        # Create sixteenth-note aligned sequences
+        for frame_idx in range(num_frames):
+            frame_beat = frame_idx / 4.0  # Convert frame index back to beat notation
+            
+            # Find melody note active at this frame
             new_melody_note = None
             for note in melody_data:
-                if note['onset'] <= beat_idx < note['offset']:
+                if note['onset'] <= frame_beat < note['offset']:
                     new_melody_note = note['pitch_class'] + (note['octave'] * 12)
                     # Check if note is in valid range
                     if not (MIN_MIDI_NOTE <= new_melody_note <= MAX_MIDI_NOTE):
                         has_invalid_notes = True
                     break
             
-            # Add melody token
+            # Melody token logic: onset vs hold vs silence
             if new_melody_note is not None:
-                if new_melody_note != current_melody_note or beat_idx == current_melody_onset:
-                    # New note or first beat of current note - use onset token
+                if new_melody_note != current_melody_note:
+                    # New note - use onset token
                     onset_token, hold_token = self.melody_tokenizer.encode_midi_note(new_melody_note)
                     melody_seq.append(onset_token)
                     current_melody_note = new_melody_note
-                    current_melody_onset = beat_idx
+                    current_melody_onset_frame = frame_idx
                 else:
-                    # Continuing note - use hold token
+                    # Same note continues - use hold token
                     onset_token, hold_token = self.melody_tokenizer.encode_midi_note(new_melody_note)
                     melody_seq.append(hold_token)
             else:
+                # No note active - use silence
                 melody_seq.append(SILENCE_TOKEN)
                 current_melody_note = None
-                current_melody_onset = -1
+                current_melody_onset_frame = -1
             
-            # Find chord for this beat
-            chord_data = None
+            # Find chord active at this frame
+            new_chord_data = None
             for chord in harmony_data:
-                if chord['onset'] <= beat_idx < chord['offset']:
-                    chord_data = chord
+                if chord['onset'] <= frame_beat < chord['offset']:
+                    new_chord_data = chord
                     break
             
-            # Add chord token
-            if chord_data is not None:
-                onset_token, hold_token = self.chord_tokenizer.encode_chord(chord_data)
-                chord_seq.append(onset_token)
+            # Chord token logic: onset vs hold vs silence
+            if new_chord_data is not None:
+                # Check if this is the same chord as previous frame
+                if (current_chord_data is None or 
+                    new_chord_data['root_pitch_class'] != current_chord_data['root_pitch_class'] or
+                    new_chord_data['root_position_intervals'] != current_chord_data['root_position_intervals'] or
+                    new_chord_data.get('inversion', 0) != current_chord_data.get('inversion', 0)):
+                    # New chord - use onset token
+                    onset_token, hold_token = self.chord_tokenizer.encode_chord(new_chord_data)
+                    chord_seq.append(onset_token)
+                    current_chord_data = new_chord_data
+                    current_chord_onset_frame = frame_idx
+                else:
+                    # Same chord continues - use hold token
+                    onset_token, hold_token = self.chord_tokenizer.encode_chord(new_chord_data)
+                    chord_seq.append(hold_token)
             else:
+                # No chord active - use silence
                 chord_seq.append(self.chord_tokenizer.silence_token)
+                current_chord_data = None
+                current_chord_onset_frame = -1
         
         # If sequence has invalid notes, return empty lists to filter it out
         if has_invalid_notes:
             print(f"Filtered sequence - invalid MIDI notes")
             return [], []
         
-        # Pad sequences to desired length
+        # Pad sequences to desired length (256 frames)
         if len(melody_seq) < self.sequence_length:
             pad_len = self.sequence_length - len(melody_seq)
             melody_seq.extend([PAD_TOKEN] * pad_len)
             chord_seq.extend([PAD_TOKEN] * pad_len)
+        else:
+            # Truncate if longer than sequence_length
+            melody_seq = melody_seq[:self.sequence_length]
+            chord_seq = chord_seq[:self.sequence_length]
         
         return melody_seq, chord_seq
     
@@ -435,7 +468,7 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
     
     # Total vocab size should be max_token_id + 1 to include all tokens from 0 to max_token_id
     total_vocab_size = max_token_id + 1
-    
+
     tokenizer_info = {
         "melody_vocab_size": MELODY_VOCAB_SIZE,
         "chord_vocab_size": chord_tokenizer.get_vocab_size(),

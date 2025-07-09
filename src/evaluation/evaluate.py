@@ -115,7 +115,7 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
     print("Model loaded successfully.")
     return model, tokenizer_info, config
 
-def generate_online(model, dataloader, tokenizer_info, device, max_length=255):
+def generate_online(model, dataloader, tokenizer_info, device, max_length=255, temperature=1.0, top_k=50, wait_beats=None):
     """
     Generate chord sequences using the online model.
     
@@ -125,31 +125,41 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255):
         tokenizer_info: Dictionary containing tokenizer information
         device: Device to run inference on
         max_length: Maximum sequence length to generate
-    
+        temperature: Sampling temperature (higher = more random)
+        top_k: Top-k filtering for sampling
+        wait_beats: Optional parameter for beat timing (currently not implemented)
+        
     Returns:
         Tuple of (generated_sequences, ground_truth_sequences)
     """
     model.eval()
     
-    # Token configuration - exactly like debug version
-    chord_onset_start = tokenizer_info['chord_onset_start']
-    chord_onset_end = tokenizer_info['chord_onset_end']
-    hold_token_offset = tokenizer_info['hold_token_offset']
+    # Calculate token configuration from available tokenizer_info keys
+    chord_token_start = tokenizer_info['chord_token_start']
+    chord_vocab_size = tokenizer_info['chord_vocab_size']
+    
+    # Calculate the missing keys based on tokenizer structure
+    # The chord tokenizer creates onset tokens followed by hold tokens
+    # Hold tokens start after all onset tokens
+    chord_onset_start = chord_token_start
+    chord_onset_end = chord_token_start + (chord_vocab_size // 2) - 1  # Half the vocab is onset tokens
+    hold_token_offset = chord_vocab_size // 2  # Offset to convert onset to hold token
     
     print(f"Token ranges: chord_onset=[{chord_onset_start}, {chord_onset_end}], hold_offset={hold_token_offset}")
+    print(f"Sampling: temperature={temperature}, top_k={top_k}")
     
     generated_sequences = []
     ground_truth_sequences = []
-    
+
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Generating online sequences")):
             # Extract melody tokens and ground truth - same as debug version
             input_tokens = batch['input_tokens'].to(device)
             melody_sequences = input_tokens[:, 1::2]  # Extract melody tokens from interleaved input
             ground_truth_sequences.extend(batch['target_tokens'].cpu().numpy())
-            
+
             batch_size, seq_len = melody_sequences.shape
-            
+
             # Log first batch info like debug version
             if batch_idx == 0:
                 print(f"First batch: batch_size={batch_size}, seq_len={seq_len}")
@@ -177,6 +187,15 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255):
                 # Generate chord predictions - exactly like debug version
                 logits = model(input_tokens_batch)
                 chord_logits = logits[:, -1, chord_onset_start:chord_onset_end+1]
+
+                # Apply temperature scaling
+                chord_logits = chord_logits / temperature
+
+                # Apply top-k filtering
+                if top_k > 0:
+                    top_k_vals, top_k_indices = torch.topk(chord_logits, min(top_k, chord_logits.size(-1)), dim=-1)
+                    chord_logits = torch.full_like(chord_logits, float('-inf'))
+                    chord_logits.scatter_(-1, top_k_indices, top_k_vals)
                 
                 # Sample new chord tokens - exactly like debug version
                 chord_probs = F.softmax(chord_logits, dim=-1)
@@ -192,8 +211,8 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255):
                         chord_durations[seq_idx] = 1
                     else:
                         # Subsequent timesteps: decide whether to continue or start new chord - exactly like debug version
-                        # Simple heuristic: 70% chance to continue if duration < 4, otherwise new chord
-                        if chord_durations[seq_idx] < 4 and torch.rand(1).item() < 0.7:
+                        # Simple heuristic: 70% chance to continue if duration < 16 (4 beats), otherwise new chord
+                        if chord_durations[seq_idx] < 16 and torch.rand(1).item() < 0.7:
                             # Continue current chord (use hold token) - exactly like debug version
                             chord_sequences[seq_idx, t] = current_chords[seq_idx] + hold_token_offset
                             chord_durations[seq_idx] += 1
@@ -216,7 +235,7 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255):
                 print(f"Generated {len(generated_sequences)} sequences from first batch")
                 print(f"First sequence length: {len(generated_sequences[0])}")
                 print(f"First sequence preview: {generated_sequences[0][:10]}")
-    
+
     return generated_sequences, ground_truth_sequences
 
 def main(args):
@@ -247,9 +266,11 @@ def main(args):
         model=model,
         dataloader=test_loader,
         tokenizer_info=tokenizer_info,
-        device=device
+        device=device,
+        temperature=args.temperature,
+        top_k=args.top_k
     )
-
+    
     # Calculate metrics
     harmony_metrics = calculate_harmony_metrics(generated_sequences, tokenizer_info)
     emd_metrics = calculate_emd_metrics(generated_sequences, ground_truth_sequences, tokenizer_info)
