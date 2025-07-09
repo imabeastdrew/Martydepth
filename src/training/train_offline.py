@@ -76,10 +76,13 @@ def main(config: dict):
         total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)  # Use unified vocabulary
     ).to(device)
 
-    optimizer = torch.optim.Adam(
+    from transformers import Adafactor
+    
+    optimizer = Adafactor(
         model.parameters(),
         lr=config['learning_rate'],
-        weight_decay=config.get('weight_decay', 0.01)
+        scale_parameter=False,
+        relative_step=False
     )
     
     scheduler = get_warmup_schedule(optimizer, num_warmup_steps=config['warmup_steps'])
@@ -143,10 +146,11 @@ def main(config: dict):
                 )
             
             print("4. Testing optimizer creation...")
-            smoke_optimizer = torch.optim.Adam(
+            smoke_optimizer = Adafactor(
                 smoke_model.parameters(),
                 lr=config['learning_rate'],
-                weight_decay=config.get('weight_decay', 0.01)
+                scale_parameter=False,
+                relative_step=False
             )
             
             # Clean up

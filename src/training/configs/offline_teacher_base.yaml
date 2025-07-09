@@ -2,7 +2,7 @@
 
 # --- Data settings ---
 data_dir: data/interim
-batch_size: 64
+batch_size: 256
 num_workers: 2
 
 # --- Model architecture (Paper Spec: 8 layers total) ---
@@ -13,7 +13,7 @@ max_sequence_length: 256
 dropout: 0.1
 
 # --- Training loop (Paper Spec) ---
-learning_rate: 1.0e-3
+learning_rate: 1.0e-4  # Reduced for T5 stability with Adam
 weight_decay: 0.01
 max_epochs: 50
 warmup_steps: 1000
