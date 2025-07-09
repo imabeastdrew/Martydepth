@@ -214,6 +214,9 @@ def generate_online(model: OnlineTransformer,
                 print(f"Melody tokens range: [{melody_tokens.min().item()}, {melody_tokens.max().item()}]")
                 print("\nFirst sequence melody tokens:")
                 print(melody_tokens[0][:20])  # Print first 20 tokens
+            
+            # Show batch progress
+            print(f"\n=== Processing Batch {batch_idx + 1} (sequences {batch_idx * batch_size + 1}-{(batch_idx + 1) * batch_size}) ===")
 
             # Start with empty sequence - we'll predict the first chord based on first melody token
             generated_so_far = torch.zeros((batch_size, 0), dtype=torch.long, device=device)
@@ -384,6 +387,37 @@ def generate_online(model: OnlineTransformer,
 
                 # Append the generated chord token
                 generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
+                
+                # Debug: Print current generation state every 10 timesteps
+                if t % 10 == 0 or t < 5:  # Show first 5 steps and every 10th step
+                    print(f"\n  Timestep {t:3d}: ", end="")
+                    
+                    # Show first 3 sequences in batch
+                    for seq_idx in range(min(3, batch_size)):
+                        chord_val = current_chords[seq_idx].item()
+                        duration = int(chord_durations[seq_idx].item())
+                        is_hold = is_hold_token[seq_idx].item()
+                        melody_val = melody_tokens[seq_idx, t].item()
+                        
+                        chord_type = "H" if is_hold else "N"  # Hold or New
+                        print(f"Seq{seq_idx}[C:{chord_val:4d}{chord_type} D:{duration} M:{melody_val:2d}] ", end="")
+                    
+                    if batch_size > 3:
+                        print("...", end="")
+                    print()  # New line
+                
+                # Show generated sequence sample at key timesteps
+                if t in [0, 4, 9, 19, 49] and batch_idx == 0:
+                    seq_sample = generated_so_far[0].cpu().numpy()
+                    print(f"    Generated so far (seq 0): {seq_sample}")
+                    
+                    # Show interleaved preview
+                    if len(seq_sample) >= 5:
+                        melody_sample = melody_tokens[0, :len(seq_sample)].cpu().numpy()
+                        interleaved_preview = []
+                        for i in range(min(5, len(seq_sample))):
+                            interleaved_preview.extend([seq_sample[i], melody_sample[i]])
+                        print(f"    Interleaved preview: {interleaved_preview}")
 
             # Collect results for the batch
             # Create full interleaved sequences (melody + chord tokens) for evaluation
@@ -402,6 +436,9 @@ def generate_online(model: OnlineTransformer,
                 full_sequence[1::2] = melody_sequence  # Odd indices for melody
                 
                 generated_sequences.append(full_sequence)
+            
+            # Batch completion indicator
+            print(f"✓ Batch {batch_idx + 1} completed ({batch_size} sequences generated)")
 
     # Debug output for the first batch
     if len(generated_sequences) > 0:
