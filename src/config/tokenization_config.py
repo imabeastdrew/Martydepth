@@ -21,7 +21,7 @@ PAD_TOKEN = MELODY_VOCAB_SIZE  # Padding token ID (178)
 
 # --- Chord Token Range ---
 CHORD_TOKEN_START = PAD_TOKEN + 1  # Start of chord tokens (179)
-CHORD_SILENCE_TOKEN = None  # Will be set after chord vocab is determined
+CHORD_SILENCE_TOKEN = 0  # Use 0 for chord silence (same as melody silence)
 
 # --- MIDI Conversion Functions ---
 def midi_to_token_index(midi_number: int) -> int:

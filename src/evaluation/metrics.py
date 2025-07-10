@@ -17,11 +17,51 @@ from src.config.tokenization_config import (
 )
 from src.data.preprocess_frames import MIDITokenizer
 
+def validate_interleaved_sequences(sequences: List[np.ndarray], tokenizer_info: Dict) -> None:
+    """
+    Validates that sequences are in the correct interleaved format.
+    Raises ValueError with helpful message if format is incorrect.
+    """
+    if not sequences:
+        raise ValueError("Empty sequence list provided")
+    
+    chord_token_start = tokenizer_info.get('chord_token_start', CHORD_TOKEN_START)
+    melody_vocab_size = tokenizer_info.get('melody_vocab_size', MELODY_VOCAB_SIZE)
+    
+    for i, seq in enumerate(sequences[:3]):  # Check first 3 sequences
+        if len(seq) == 0:
+            continue
+            
+        if len(seq) % 2 != 0:
+            raise ValueError(f"Sequence {i} has odd length ({len(seq)}). "
+                           "Interleaved sequences must have even length [chord_0, melody_0, chord_1, melody_1, ...]")
+        
+        # Check if all even indices (chord positions) have chord-like tokens
+        chord_tokens = seq[0::2]
+        melody_tokens = seq[1::2]
+        
+        # Check if this looks like a chord-only sequence (common mistake)
+        if np.all(chord_tokens >= chord_token_start) and np.all(melody_tokens >= chord_token_start):
+            raise ValueError(f"Sequence {i} appears to be chord-only (all tokens >= {chord_token_start}). "
+                           "Expected interleaved format [chord_0, melody_0, chord_1, melody_1, ...]. "
+                           "Use create_interleaved_sequences() to fix this.")
+        
+        # Check if this looks like a melody-only sequence
+        if np.all(chord_tokens < chord_token_start) and np.all(melody_tokens < chord_token_start):
+            raise ValueError(f"Sequence {i} appears to be melody-only (all tokens < {chord_token_start}). "
+                           "Expected interleaved format [chord_0, melody_0, chord_1, melody_1, ...].")
+
 def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
     """
     Parses token sequences into structured musical events.
     Handles interleaved sequences where even indices are chord tokens and odd indices are melody tokens.
+    
+    IMPORTANT: Expects interleaved sequences [chord_0, melody_0, chord_1, melody_1, ...]
+    Use create_interleaved_sequences() if you have separate melody and chord arrays.
     """
+    # Validate input format
+    validate_interleaved_sequences(sequences, tokenizer_info)
+    
     parsed_data = []
     melody_tokenizer = MIDITokenizer()  # Create tokenizer instance
     
@@ -55,15 +95,25 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
                         notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': time_step})
                         active_note = None
             
-            # --- Chord Parsing ---
-            if chord_token >= CHORD_TOKEN_START:
+            # --- Chord Parsing (FIXED) ---
+            chord_silence_token = tokenizer_info.get("chord_silence_token", 0)
+            
+            if chord_token == chord_silence_token:
+                # Chord silence - end current chord if any
+                if active_chord:
+                    chords.append({'token': active_chord['token'], 'start': active_chord['start'], 'end': time_step})
+                    active_chord = None
+            elif chord_token >= CHORD_TOKEN_START:
                 token_str = str(chord_token)
                 if token_str in tokenizer_info['token_to_chord']:
                     chord_info = tokenizer_info['token_to_chord'][token_str]
-                    if not chord_info['is_hold']:  # Only process onset tokens
+                    
+                    if not chord_info['is_hold']:  # Onset token - start new chord
                         if active_chord:
                             chords.append({'token': active_chord['token'], 'start': active_chord['start'], 'end': time_step})
                         active_chord = {'token': chord_token, 'start': time_step}
+                    # Hold tokens: do nothing, continue current chord
+                    # (The active_chord continues until we hit an onset or silence)
 
         # Finalize any open notes/chords
         if active_note:
@@ -73,6 +123,94 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
             
         parsed_data.append({'notes': notes, 'chords': chords})
     return parsed_data
+
+def create_interleaved_sequences(melody_tokens: np.ndarray, chord_tokens: np.ndarray) -> List[np.ndarray]:
+    """
+    Helper function to create interleaved sequences from separate melody and chord token arrays.
+    Used for offline model evaluation where melody and chords are separate.
+    
+    Args:
+        melody_tokens: Array of melody tokens, shape (batch_size, seq_len)
+        chord_tokens: Array of chord tokens, shape (batch_size, seq_len)
+        
+    Returns:
+        List of interleaved sequences [chord_0, melody_0, chord_1, melody_1, ...]
+    """
+    sequences = []
+    
+    if melody_tokens.ndim == 1:
+        melody_tokens = melody_tokens.reshape(1, -1)
+    if chord_tokens.ndim == 1:
+        chord_tokens = chord_tokens.reshape(1, -1)
+    
+    for i in range(len(melody_tokens)):
+        melody_seq = melody_tokens[i]
+        chord_seq = chord_tokens[i]
+        
+        # Handle length mismatch
+        min_len = min(len(melody_seq), len(chord_seq))
+        melody_seq = melody_seq[:min_len]
+        chord_seq = chord_seq[:min_len]
+        
+        # Create interleaved sequence: [chord_0, melody_0, chord_1, melody_1, ...]
+        interleaved = np.empty(min_len * 2, dtype=np.int64)
+        interleaved[0::2] = chord_seq   # Even indices: chords
+        interleaved[1::2] = melody_seq  # Odd indices: melody
+        
+        sequences.append(interleaved)
+    
+    return sequences
+
+# Test set baseline constants (from calculate_test_set_baselines.py output - December 2024)
+TEST_SET_BASELINES = {
+    "harmony_ratio_percent": 65.88,
+    "total_frames_analyzed": 511988,
+    "chord_length_entropy": 2.1701,
+    "onset_interval_emd_internal_variation": 28.8910,
+    "onset_interval_emd_perfect_sync": 0.0000,
+    "description": "Baselines calculated from test set ground truth with fixed preprocessing"
+}
+
+def print_baseline_comparison(harmony_metrics: Dict, emd_metrics: Dict):
+    """
+    Helper function to print model performance compared to test set baselines.
+    
+    Args:
+        harmony_metrics: Output from calculate_harmony_metrics()
+        emd_metrics: Output from calculate_emd_metrics()
+    """
+    baselines = TEST_SET_BASELINES
+    
+    print("=== MODEL PERFORMANCE vs TEST SET BASELINES ===")
+    
+    # Harmony ratio
+    model_harmony = harmony_metrics.get("melody_note_in_chord_ratio", 0)
+    baseline_harmony = baselines["harmony_ratio_percent"]
+    harmony_ratio = model_harmony / baseline_harmony if baseline_harmony > 0 else 0
+    print(f"Harmony Ratio: {model_harmony:.2f}% vs {baseline_harmony:.2f}% (baseline)")
+    print(f"  → Performance: {harmony_ratio:.1%} of baseline {'✅' if harmony_ratio >= 0.8 else '❌'}")
+    
+    # Chord length entropy
+    model_entropy = emd_metrics.get("chord_length_entropy", 0)
+    baseline_entropy = baselines["chord_length_entropy"]
+    entropy_ratio = model_entropy / baseline_entropy if baseline_entropy > 0 else 0
+    print(f"Chord Length Entropy: {model_entropy:.3f} vs {baseline_entropy:.3f} (baseline)")
+    print(f"  → Performance: {entropy_ratio:.1%} of baseline {'✅' if entropy_ratio >= 0.8 else '❌'}")
+    
+    # EMD
+    model_emd = emd_metrics.get("onset_interval_emd", float('inf'))
+    baseline_emd = baselines["onset_interval_emd_internal_variation"]
+    if not np.isnan(model_emd) and baseline_emd > 0:
+        emd_performance = baseline_emd / model_emd  # Higher is better (lower EMD)
+        print(f"Onset Interval EMD: {model_emd:.2f} vs {baseline_emd:.2f} (baseline)")
+        print(f"  → Performance: {'✅' if emd_performance >= 1.0 else '❌'} ({'better' if emd_performance > 1.0 else 'worse'} than baseline)")
+    else:
+        print(f"Onset Interval EMD: {model_emd} (calculation failed)")
+    
+    # Overall assessment
+    overall_good = (harmony_ratio >= 0.8 and entropy_ratio >= 0.8 and 
+                   (not np.isnan(model_emd) and model_emd <= baseline_emd))
+    print(f"\nOverall Assessment: {'✅ GOOD' if overall_good else '❌ NEEDS IMPROVEMENT'}")
 
 def convert_to_standard_intervals(consecutive_intervals):
     """Convert consecutive intervals to standard intervals from root.
@@ -117,21 +255,34 @@ def check_harmony(pitch: int, chord_info: Dict) -> bool:
 
 def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict) -> Dict:
     """
-    Calculates harmony metrics.
+    Calculates harmony metrics using the same logic as calculate_test_set_baselines.py
     - Melody Note in Chord Ratio
     
     The metric follows the paper's methodology:
     1. Only considers frames where both melody and chord are active (not silence)
     2. Checks if the melody note is part of the chord's pitch classes
     3. Reports percentage of in-harmony frames
+    
+    CRITICAL: This function expects interleaved sequences where:
+    - Even indices (0, 2, 4, ...) are chord tokens
+    - Odd indices (1, 3, 5, ...) are melody tokens
+    
+    Args:
+        sequences: List of interleaved sequences [chord_0, melody_0, chord_1, melody_1, ...]
+                  If you have separate melody/chord arrays, use create_interleaved_sequences() first.
+        tokenizer_info: Tokenizer information dictionary
+        
+    Raises:
+        ValueError: If sequences are not in correct interleaved format
     """
+    # Use the same parsing logic as calculate_test_set_baselines.py
     parsed_data = parse_sequences(sequences, tokenizer_info)
     in_harmony_frames = 0
     total_frames = 0
     
     # Get silence token values from config
     melody_silence_token = SILENCE_TOKEN
-    chord_silence_token = tokenizer_info.get("chord_silence_token", CHORD_TOKEN_START - 1)
+    chord_silence_token = tokenizer_info.get("chord_silence_token", 0)
     token_to_chord = tokenizer_info.get("token_to_chord", {})
 
     for data in parsed_data:
@@ -153,14 +304,13 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
                 if not active_chord or active_chord['token'] == chord_silence_token:
                     continue
                     
-                # Get chord info and check harmony
+                # Get chord info and check harmony - include all chord frames (onset and hold)
                 chord_token_str = str(active_chord['token'])
                 if chord_token_str not in token_to_chord:
                     continue
                     
                 chord_info = token_to_chord[chord_token_str]
-                if chord_info['is_hold']:  # Skip hold tokens
-                    continue
+                # Count all chord frames (removed hold token filter to match baseline logic)
                     
                 total_frames += 1
                 if check_harmony(note['pitch'], chord_info):
@@ -238,13 +388,26 @@ def calculate_emd_metrics(generated_sequences: List[np.ndarray],
                           ground_truth_sequences: List[np.ndarray], 
                           tokenizer_info: Dict) -> Dict:
     """
-    Calculates the Earth Mover's Distance (EMD) for onset intervals and entropy for chord lengths.
+    Calculates the Earth Mover's Distance (EMD) for onset intervals and entropy for chord lengths
+    using the same logic as calculate_test_set_baselines.py.
     
     Following paper's methodology:
     - Onset intervals: bins [0, 1, 2, ..., 16, 17, ∞], EMD × 10^3
     - Chord lengths: bins [0, 1, 2, ..., 32, 33, ∞], calculate entropy in nats
+    
+    CRITICAL: This function expects interleaved sequences where:
+    - Even indices (0, 2, 4, ...) are chord tokens
+    - Odd indices (1, 3, 5, ...) are melody tokens
+    
+    Args:
+        generated_sequences: List of interleaved sequences from model [chord_0, melody_0, chord_1, melody_1, ...]
+        ground_truth_sequences: List of interleaved sequences from ground truth [chord_0, melody_0, chord_1, melody_1, ...]
+        tokenizer_info: Tokenizer information dictionary
+        
+    Raises:
+        ValueError: If sequences are not in correct interleaved format
     """
-    # Parse sequences
+    # Parse sequences using the same logic as calculate_test_set_baselines.py
     gen_parsed = parse_sequences(generated_sequences, tokenizer_info)
     gt_parsed = parse_sequences(ground_truth_sequences, tokenizer_info)
 
@@ -255,7 +418,12 @@ def calculate_emd_metrics(generated_sequences: List[np.ndarray],
             if not data['notes'] or not data['chords']: 
                 continue
             note_onsets = np.array([n['start'] for n in data['notes']])
-            chord_onsets = np.array([c['start'] for c in data['chords']])
+            # Get chord onsets only (filter out hold tokens if needed)
+            chord_onsets = []
+            for c in data['chords']:
+                chord_onsets.append(c['start'])
+            chord_onsets = np.array(chord_onsets)
+            
             for n_onset in note_onsets:
                 if len(chord_onsets) > 0:
                     # Find minimum distance to any chord onset
@@ -268,11 +436,14 @@ def calculate_emd_metrics(generated_sequences: List[np.ndarray],
 
     # Create histograms with paper's binning
     onset_bins = list(range(18)) + [np.inf]  # [0,1,...,17,inf]
-    gen_hist, _ = np.histogram(gen_intervals, bins=onset_bins, density=True)
-    gt_hist, _ = np.histogram(gt_intervals, bins=onset_bins, density=True)
-
-    # Calculate EMD and multiply by 10^3 as per paper
-    onset_emd = wasserstein_distance(gen_hist, gt_hist) * (10**3)
+    
+    if len(gen_intervals) > 0 and len(gt_intervals) > 0:
+        gen_hist, _ = np.histogram(gen_intervals, bins=onset_bins, density=True)
+        gt_hist, _ = np.histogram(gt_intervals, bins=onset_bins, density=True)
+        # Calculate EMD and multiply by 10^3 as per paper
+        onset_emd = wasserstein_distance(gen_hist, gt_hist) * (10**3)
+    else:
+        onset_emd = float('nan')
 
     # --- Chord Length Entropy ---
     def get_chord_lengths(parsed_data):
@@ -284,14 +455,17 @@ def calculate_emd_metrics(generated_sequences: List[np.ndarray],
                     lengths.append(length)
         return np.array(lengths)
 
-    # Calculate chord length entropy (in nats)
+    # Calculate chord length entropy (in nats) for generated sequences
     gen_lengths = get_chord_lengths(gen_parsed)
-    # Create histogram with paper's binning
-    length_bins = list(range(34)) + [np.inf]  # [0,1,...,33,inf]
-    hist, _ = np.histogram(gen_lengths, bins=length_bins, density=True)
-    # Remove zero probabilities before calculating entropy
-    hist = hist[hist > 0]
-    chord_length_entropy = -np.sum(hist * np.log(hist))  # Natural log for nats
+    if len(gen_lengths) > 0:
+        # Create histogram with paper's binning
+        length_bins = list(range(34)) + [np.inf]  # [0,1,...,33,inf]
+        hist, _ = np.histogram(gen_lengths, bins=length_bins, density=True)
+        # Remove zero probabilities before calculating entropy
+        hist = hist[hist > 0]
+        chord_length_entropy = -np.sum(hist * np.log(hist))  # Natural log for nats
+    else:
+        chord_length_entropy = 0.0
     
     return {
         "onset_interval_emd": onset_emd,

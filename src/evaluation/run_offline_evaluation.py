@@ -44,20 +44,34 @@ def main(args):
     )
     print(f"Test dataloader created for split: '{args.split}'")
 
-    # Generate sequences
+    # Generate sequences using clean adapter pattern
     print("Generating accompaniments...")
-    generated_sequences, ground_truth_sequences = generate_offline(
+    generated_chords, ground_truth_chords, melody_sequences = generate_offline(
         model=model,
         dataloader=dataloader,
         tokenizer_info=tokenizer_info,
         device=device,
     )
-    print(f"Generated {len(generated_sequences)} sequences.")
+    print(f"Generated {len(generated_chords)} chord sequences.")
+
+    # Convert to interleaved format for metrics calculation (adapter pattern)
+    from src.evaluation.metrics import create_interleaved_sequences
+    print("Converting to interleaved format for metrics calculation...")
+    
+    import numpy as np
+    generated_interleaved = create_interleaved_sequences(
+        np.array(melody_sequences), np.array(generated_chords)
+    )
+    ground_truth_interleaved = create_interleaved_sequences(
+        np.array(melody_sequences), np.array(ground_truth_chords)
+    )
+    
+    print(f"Created {len(generated_interleaved)} interleaved sequences for evaluation.")
 
     # Calculate metrics
     print("\n--- Calculating Metrics ---")
-    harmony_metrics = calculate_harmony_metrics(generated_sequences, tokenizer_info)
-    emd_metrics = calculate_emd_metrics(generated_sequences, ground_truth_sequences, tokenizer_info)
+    harmony_metrics = calculate_harmony_metrics(generated_interleaved, tokenizer_info)
+    emd_metrics = calculate_emd_metrics(generated_interleaved, ground_truth_interleaved, tokenizer_info)
 
     all_metrics = {
         **harmony_metrics,

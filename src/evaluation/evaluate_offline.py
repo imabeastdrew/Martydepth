@@ -107,10 +107,13 @@ def generate_offline(model: T5OfflineTeacherModel,
                      top_k: int = 50,
                      min_chord_frames: int = 8,    # 2 beats at 4 frames per beat
                      max_chord_frames: int = 128,  # 32 beats at 4 frames per beat
-                     change_prob: float = 0.3) -> tuple[list, list]:
+                     change_prob: float = 0.3) -> tuple[list, list, list]:
     """
     Generate chord sequences for given melodies using the offline model.
     The offline model can see the entire melody sequence before generating each chord.
+    
+    CLEAN ARCHITECTURE: Returns only what the model generates (chords) plus the input melodies.
+    Use create_interleaved_sequences() to convert for metrics calculation when needed.
     
     Args:
         model: The offline teacher model
@@ -124,11 +127,12 @@ def generate_offline(model: T5OfflineTeacherModel,
         change_prob: Probability to change chord after min duration is met (0.0 to 1.0)
         
     Returns:
-        Tuple of (generated sequences, ground truth sequences)
+        Tuple of (generated_chord_sequences, ground_truth_chord_sequences, melody_sequences)
     """
     model.eval()
-    generated_sequences = []
-    ground_truth_sequences = []
+    generated_chord_sequences = []
+    ground_truth_chord_sequences = []
+    melody_sequences = []
     
     # Get token indices from tokenizer info
     melody_vocab_size = tokenizer_info['melody_vocab_size']
@@ -138,9 +142,10 @@ def generate_offline(model: T5OfflineTeacherModel,
     pad_token_id = tokenizer_info.get('pad_token_id', PAD_TOKEN)
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Generating offline sequences"):
+        for batch in tqdm(dataloader, desc="Generating offline chord sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
-            ground_truth_sequences.extend(batch['chord_target'].cpu().numpy())
+            ground_truth_chord_tokens = batch['chord_target'].cpu().numpy()
+            melody_tokens_np = melody_tokens.cpu().numpy()
             
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
@@ -218,14 +223,57 @@ def generate_offline(model: T5OfflineTeacherModel,
                 # Append the generated chord token
                 generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
 
-            # Collect results for the batch
-            # Skip the first token as it's just the initial silence
+            # Store chord-only sequences (clean separation of concerns)
             for i in range(batch_size):
-                full_sequence = generated_so_far[i, 1:].cpu().numpy()
-                generated_sequences.append(full_sequence)
+                generated_chord_seq = generated_so_far[i, 1:].cpu().numpy()  # Skip PAD token
+                ground_truth_chord_seq = ground_truth_chord_tokens[i]
+                melody_seq = melody_tokens_np[i]
+                
+                # Ensure all sequences have the same length
+                min_len = min(len(generated_chord_seq), len(ground_truth_chord_seq), len(melody_seq))
+                generated_chord_seq = generated_chord_seq[:min_len]
+                ground_truth_chord_seq = ground_truth_chord_seq[:min_len]
+                melody_seq = melody_seq[:min_len]
+                
+                # Store the separate sequences (not interleaved)
+                generated_chord_sequences.append(generated_chord_seq)
+                ground_truth_chord_sequences.append(ground_truth_chord_seq)
+                melody_sequences.append(melody_seq)
 
-    print(f"\nGenerated {len(generated_sequences)} sequences in offline mode.")
-    return generated_sequences, ground_truth_sequences
+    print(f"\nGenerated {len(generated_chord_sequences)} chord sequences in offline mode.")
+    return generated_chord_sequences, ground_truth_chord_sequences, melody_sequences
+
+def evaluate_offline_model_clean(model, dataloader, tokenizer_info, device, **generation_kwargs):
+    """
+    DEMONSTRATION: How evaluation could work with cleaner separation.
+    This approach keeps the model interface clean while supporting evaluation needs.
+    """
+    # Generate chord-only sequences (clean model interface)
+    generated_chords, ground_truth_chords, melodies = generate_offline(
+        model, dataloader, tokenizer_info, device, **generation_kwargs
+    )
+    
+    # Convert to interleaved format for metrics (evaluation-specific logic)
+    from src.evaluation.metrics import create_interleaved_sequences
+    generated_interleaved = create_interleaved_sequences(
+        np.array(melodies), np.array(generated_chords)
+    )
+    ground_truth_interleaved = create_interleaved_sequences(
+        np.array(melodies), np.array(ground_truth_chords)
+    )
+    
+    # Calculate metrics
+    harmony_metrics = calculate_harmony_metrics(generated_interleaved, tokenizer_info)
+    emd_metrics = calculate_emd_metrics(generated_interleaved, ground_truth_interleaved, tokenizer_info)
+    
+    return {
+        'generated_sequences': generated_interleaved,
+        'ground_truth_sequences': ground_truth_interleaved,
+        'harmony_metrics': harmony_metrics,
+        'emd_metrics': emd_metrics,
+        'raw_chords': generated_chords,  # Available if needed
+        'raw_melodies': melodies
+    }
 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
@@ -238,19 +286,37 @@ def main(args):
         split="test",
         batch_size=args.batch_size,
         num_workers=0,
-        sequence_length=config.get('max_sequence_length') or config.get('max_seq_length'),
-        mode='offline'
+        sequence_length=256,
+        mode='offline',
+        shuffle=False
     )
     
-    generated_sequences, ground_truth_sequences = generate_offline(
+    # Generate chord sequences using the clean adapter pattern
+    generated_chords, ground_truth_chords, melody_sequences = generate_offline(
         model=model,
         dataloader=test_loader,
         tokenizer_info=tokenizer_info,
-        device=device
+        device=device,
+    )
+    print(f"Generated {len(generated_chords)} chord sequences.")
+
+    # Convert to interleaved format for metrics calculation (adapter pattern)
+    from src.evaluation.metrics import create_interleaved_sequences
+    print("Converting to interleaved format for metrics calculation...")
+    
+    generated_interleaved = create_interleaved_sequences(
+        np.array(melody_sequences), np.array(generated_chords)
+    )
+    ground_truth_interleaved = create_interleaved_sequences(
+        np.array(melody_sequences), np.array(ground_truth_chords)
     )
     
-    harmony_metrics = calculate_harmony_metrics(generated_sequences, tokenizer_info)
-    emd_metrics = calculate_emd_metrics(generated_sequences, ground_truth_sequences, tokenizer_info)
+    print(f"Created {len(generated_interleaved)} interleaved sequences for evaluation.")
+
+    # Calculate metrics using interleaved sequences
+    print("\n--- Calculating Metrics ---")
+    harmony_metrics = calculate_harmony_metrics(generated_interleaved, tokenizer_info)
+    emd_metrics = calculate_emd_metrics(generated_interleaved, ground_truth_interleaved, tokenizer_info)
     
     all_metrics = {**harmony_metrics, **emd_metrics}
     
@@ -260,7 +326,7 @@ def main(args):
         print(f"  {key}: {value:.4f}")
     print("---------------------------------")
     
-    log_results_to_wandb(args, all_metrics, generated_sequences, tokenizer_info)
+    log_results_to_wandb(args, all_metrics, generated_interleaved, tokenizer_info)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate an offline teacher model.")

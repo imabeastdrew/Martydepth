@@ -98,8 +98,8 @@ class ChordTokenizer:
         self.token_offset = CHORD_TOKEN_START
         # Track unique interval patterns for analysis
         self.interval_patterns = set()
-        # Special tokens
-        self.silence_token = self.token_offset - 1  # Last melody token
+        # Special tokens - use 0 for silence (same as melody) instead of PAD_TOKEN
+        self.silence_token = 0  # Use 0 for chord silence, same as melody silence
         self.pad_token = PAD_TOKEN
         
     def _find_or_add_pattern(self, root: int, intervals: List[int], inversion: int) -> int:
@@ -128,7 +128,9 @@ class ChordTokenizer:
         inversion = chord_data.get('inversion', 0)
         
         onset_token = self._find_or_add_pattern(root, intervals, inversion)
-        hold_token = onset_token + len(self.chord_patterns)  # Hold tokens start after all onset tokens
+        # FIXED: Use a fixed offset instead of dynamic len(chord_patterns)
+        # Hold tokens start after all possible onset tokens
+        hold_token = onset_token + self.get_max_patterns()
         
         return onset_token, hold_token
     
@@ -139,10 +141,11 @@ class ChordTokenizer:
         if token == self.pad_token:
             return None
             
-        # Check if it's a hold token
-        is_hold = token >= self.token_offset + len(self.chord_patterns)
+        # Check if it's a hold token using fixed offset
+        max_patterns = self.get_max_patterns()
+        is_hold = token >= self.token_offset + max_patterns
         if is_hold:
-            token -= len(self.chord_patterns)
+            token -= max_patterns  # Subtract fixed offset, not len(chord_patterns)
             
         # Get pattern from list
         pattern_idx = token - self.token_offset
@@ -204,8 +207,8 @@ class ChordTokenizer:
     
     def get_vocab_size(self) -> int:
         """Get total vocabulary size including onset and hold tokens."""
-        pattern_count = len(self.chord_patterns)
-        return pattern_count * 2  # Double for hold tokens
+        max_patterns = self.get_max_patterns()
+        return max_patterns * 2  # Double for hold tokens (using fixed maximum)
     
     def save(self, save_dir: Path):
         """Save tokenizer information."""
@@ -231,6 +234,13 @@ class ChordTokenizer:
         tokenizer.interval_patterns = set(tuple(p) for p in info['interval_patterns'])
         
         return tokenizer
+
+    def get_max_patterns(self) -> int:
+        """Get the maximum number of patterns that will be discovered.
+        This provides a fixed offset for hold token calculation."""
+        # Use a large fixed number to ensure hold tokens don't overlap with onset tokens
+        # This should be larger than the actual number of unique chord patterns
+        return 2500  # Estimated maximum unique chord patterns in the dataset
 
 class MIDITokenizer:
     """Tokenizer for MIDI note sequences."""
@@ -475,7 +485,7 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
         "total_vocab_size": total_vocab_size,
         "pad_token_id": PAD_TOKEN,
         "chord_token_start": CHORD_TOKEN_START,
-        "chord_silence_token": CHORD_SILENCE_TOKEN,
+        "chord_silence_token": chord_tokenizer.silence_token,  # Use actual silence token (0)
         "midi_range": {"min": MIN_MIDI_NOTE, "max": MAX_MIDI_NOTE},
         "unique_midi_notes": UNIQUE_MIDI_NOTES,
         "token_to_chord": token_to_chord
