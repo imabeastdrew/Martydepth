@@ -13,8 +13,8 @@ max_sequence_length: 256
 dropout: 0.1
 
 # --- Training loop (Paper Spec) ---
-learning_rate: 1.0e-3  # Reduced for T5 stability with Adam
-weight_decay: 0.01
+learning_rate: 1.0e-3  # Good starting point for AdamW with T5
+weight_decay: 0.01  # Added for AdamW - helps with regularization
 max_epochs: 50
 warmup_steps: 1000
 gradient_clip_val: 1.0
