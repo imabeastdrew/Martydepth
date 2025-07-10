@@ -104,16 +104,12 @@ def generate_offline(model: T5OfflineTeacherModel,
                      tokenizer_info: Dict,
                      device: torch.device,
                      temperature: float = 1.0,
-                     top_k: int = 50,
-                     min_chord_frames: int = 8,    # 2 beats at 4 frames per beat
-                     max_chord_frames: int = 128,  # 32 beats at 4 frames per beat
-                     change_prob: float = 0.3) -> tuple[list, list, list]:
+                     top_k: int = 50) -> tuple[list, list, list]:
     """
     Generate chord sequences for given melodies using the offline model.
     The offline model can see the entire melody sequence before generating each chord.
     
-    CLEAN ARCHITECTURE: Returns only what the model generates (chords) plus the input melodies.
-    Use create_interleaved_sequences() to convert for metrics calculation when needed.
+    FIXED: Remove hardcoded timing heuristics and let model decide timing naturally.
     
     Args:
         model: The offline teacher model
@@ -122,9 +118,6 @@ def generate_offline(model: T5OfflineTeacherModel,
         device: Device to run generation on
         temperature: Sampling temperature (higher = more random)
         top_k: Number of top logits to sample from (0 to disable)
-        min_chord_frames: Minimum number of frames for a chord
-        max_chord_frames: Maximum number of frames for a chord
-        change_prob: Probability to change chord after min duration is met (0.0 to 1.0)
         
     Returns:
         Tuple of (generated_chord_sequences, ground_truth_chord_sequences, melody_sequences)
@@ -135,10 +128,8 @@ def generate_offline(model: T5OfflineTeacherModel,
     melody_sequences = []
     
     # Get token indices from tokenizer info
-    melody_vocab_size = tokenizer_info['melody_vocab_size']
-    chord_token_start = melody_vocab_size + 1  # After PAD token
-    chord_silence_token = chord_token_start  # First chord token is silence
-    chord_vocab_size = tokenizer_info['chord_vocab_size']
+    chord_token_start = tokenizer_info['chord_token_start']
+    total_vocab_size = tokenizer_info['total_vocab_size']
     pad_token_id = tokenizer_info.get('pad_token_id', PAD_TOKEN)
 
     with torch.no_grad():
@@ -152,76 +143,37 @@ def generate_offline(model: T5OfflineTeacherModel,
             
             # Start with PAD token (T5 standard, matching training)
             generated_so_far = torch.full((batch_size, 1), pad_token_id, device=device)
-            
-            # Track current chord and its duration for each sequence in batch
-            current_chords = torch.full((batch_size,), chord_silence_token, device=device)
-            chord_durations = torch.zeros(batch_size, device=device)
-            is_hold_token = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
             for t in range(seq_length):
                 # Get model predictions using T5 model interface
                 logits = model(
                     melody_tokens=melody_tokens,
                     chord_tokens=generated_so_far
-                )[:, -1, :]
+                )[:, -1, :]  # [batch_size, total_vocab_size]
                 
-                # Determine which sequences need new chords
-                need_new_chord = (chord_durations >= max_chord_frames) | (
-                    (chord_durations >= min_chord_frames) & 
-                    (torch.rand(batch_size, device=device) < change_prob)  # Configurable change probability
-                )
+                # Filter to chord tokens only
+                chord_logits = logits[:, chord_token_start:total_vocab_size]
                 
-                # For sequences that need new chords, sample from the distribution
-                if need_new_chord.any():
-                    # Apply top-k filtering
-                    if top_k > 0:
-                        top_k_logits, top_k_indices = torch.topk(logits[need_new_chord], 
-                                                               min(top_k, logits.size(-1)))
-                        filtered_logits = torch.full_like(logits[need_new_chord], float('-inf'))
-                        filtered_logits.scatter_(1, top_k_indices, top_k_logits)
-                        logits[need_new_chord] = filtered_logits
-                    
-                    # Apply temperature scaling after filtering
-                    logits[need_new_chord] = logits[need_new_chord] / temperature
-                    
-                    # Sample new chord tokens
-                    probs = torch.softmax(logits[need_new_chord], dim=-1)
-                    new_chord_tokens = torch.multinomial(probs, num_samples=1)
-                    
-                    # Update current chords and reset durations for changed sequences
-                    current_chords[need_new_chord] = new_chord_tokens.squeeze(-1)
-                    chord_durations[need_new_chord] = 0
-                    is_hold_token[need_new_chord] = False
+                # Apply top-k filtering
+                if top_k > 0:
+                    top_k_logits, top_k_indices = torch.topk(chord_logits, 
+                                                           min(top_k, chord_logits.size(-1)))
+                    filtered_logits = torch.full_like(chord_logits, float('-inf'))
+                    filtered_logits.scatter_(1, top_k_indices, top_k_logits)
+                    chord_logits = filtered_logits
                 
-                # For continuing chords, use hold tokens
-                hold_mask = ~need_new_chord & ~is_hold_token
-                if hold_mask.any():
-                    # Convert onset tokens to hold tokens using actual number of chord patterns
-                    num_chord_patterns = len(tokenizer_info['token_to_chord']) // 2  # Each pattern has onset + hold
-                    relative_pos = current_chords[hold_mask] - chord_token_start
-                    # Ensure hold tokens stay within valid range
-                    current_chords[hold_mask] = torch.clamp(
-                        chord_token_start + (relative_pos + num_chord_patterns),
-                        min=chord_token_start,
-                        max=tokenizer_info['total_vocab_size'] - 1
-                    )
-                    is_hold_token[hold_mask] = True
+                # Apply temperature scaling after filtering
+                chord_logits = chord_logits / temperature
                 
-                # Final safety check - clamp all tokens to valid range
-                current_chords = torch.clamp(
-                    current_chords,
-                    min=chord_token_start,
-                    max=tokenizer_info['total_vocab_size'] - 1
-                )
+                # Sample chord tokens (model chooses onset vs hold naturally)
+                probs = torch.softmax(chord_logits, dim=-1)
+                new_chord_tokens = torch.multinomial(probs, num_samples=1)
                 
-                # Create next token tensor with current chords
-                next_chord_tokens = current_chords.unsqueeze(1)
-                
-                # Increment durations
-                chord_durations += 1
+                # Convert back to full vocabulary space
+                chord_tokens = new_chord_tokens.squeeze(-1) + chord_token_start
                 
                 # Append the generated chord token
-                generated_so_far = torch.cat([generated_so_far, next_chord_tokens], dim=1)
+                generated_so_far = torch.cat([generated_so_far, chord_tokens.unsqueeze(1)], dim=1)
 
             # Store chord-only sequences (clean separation of concerns)
             for i in range(batch_size):

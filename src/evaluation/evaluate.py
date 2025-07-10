@@ -119,6 +119,8 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255, t
     """
     Generate chord sequences using the online model.
     
+    FIXED: Let model decide timing naturally instead of hardcoded heuristics.
+    
     Args:
         model: The trained online transformer model
         dataloader: DataLoader containing melody sequences
@@ -134,18 +136,11 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255, t
     """
     model.eval()
     
-    # Calculate token configuration from available tokenizer_info keys
+    # Get token ranges for filtering
     chord_token_start = tokenizer_info['chord_token_start']
-    chord_vocab_size = tokenizer_info['chord_vocab_size']
+    total_vocab_size = tokenizer_info['total_vocab_size']
     
-    # Calculate the missing keys based on tokenizer structure
-    # The chord tokenizer creates onset tokens followed by hold tokens
-    # Hold tokens start after all onset tokens
-    chord_onset_start = chord_token_start
-    chord_onset_end = chord_token_start + (chord_vocab_size // 2) - 1  # Half the vocab is onset tokens
-    hold_token_offset = chord_vocab_size // 2  # Offset to convert onset to hold token
-    
-    print(f"Token ranges: chord_onset=[{chord_onset_start}, {chord_onset_end}], hold_offset={hold_token_offset}")
+    print(f"Chord tokens: [{chord_token_start}, {total_vocab_size-1}]")
     print(f"Sampling: temperature={temperature}, top_k={top_k}")
     
     generated_sequences = []
@@ -153,40 +148,45 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255, t
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Generating online sequences")):
-            # Extract melody tokens and ground truth - same as debug version
+            # Get data from online dataloader format
             input_tokens = batch['input_tokens'].to(device)
-            melody_sequences = input_tokens[:, 1::2]  # Extract melody tokens from interleaved input
-            ground_truth_sequences.extend(batch['target_tokens'].cpu().numpy())
+            target_tokens = batch['target_tokens'].to(device)
+            
+            # Extract melody from the interleaved input format
+            # input_tokens = [chord_0, melody_0, chord_1, melody_1, ..., melody_254] (511 tokens)
+            # We need melody_0, melody_1, ..., melody_254 (255 tokens)
+            melody_sequences = input_tokens[:, 1::2]  # Every other token starting from index 1
+            ground_truth_sequences.extend(target_tokens.cpu().numpy())
 
             batch_size, seq_len = melody_sequences.shape
 
-            # Log first batch info like debug version
+            # Log first batch info
             if batch_idx == 0:
                 print(f"First batch: batch_size={batch_size}, seq_len={seq_len}")
                 print(f"Melody range: [{melody_sequences.min()}, {melody_sequences.max()}]")
             
-            # Initialize chord sequences - exactly like debug version
+            # FIXED: Let model predict timing naturally
+            # Initialize with first chord from ground truth for the first token
             chord_sequences = torch.zeros(batch_size, seq_len, dtype=torch.long, device=device)
-            chord_sequences[:, 0] = 0  # START token
+            chord_sequences[:, 0] = input_tokens[:, 0]  # Use ground truth first chord
             
-            # Track chord durations and current chords - exactly like debug version
-            chord_durations = torch.ones(batch_size, dtype=torch.long, device=device)
-            current_chords = torch.zeros(batch_size, dtype=torch.long, device=device)
-            
-            # Autoregressive generation - exactly like debug version
+            # Autoregressive generation - model decides its own timing
             for t in range(1, seq_len):
-                # Prepare input: all previous [chord, melody] pairs - exactly like debug version
+                # Prepare input: all previous [chord, melody] pairs
                 input_length = 2 * t
                 input_tokens_batch = torch.zeros(batch_size, input_length, dtype=torch.long, device=device)
                 
-                # Fill interleaved input: [chord_0, melody_0, chord_1, melody_1, ...] - exactly like debug version
+                # Fill interleaved input: [chord_0, melody_0, chord_1, melody_1, ...]
                 for i in range(t):
                     input_tokens_batch[:, 2*i] = chord_sequences[:, i]
                     input_tokens_batch[:, 2*i + 1] = melody_sequences[:, i]
                 
-                # Generate chord predictions - exactly like debug version
+                # Get model predictions over FULL vocabulary
                 logits = model(input_tokens_batch)
-                chord_logits = logits[:, -1, chord_onset_start:chord_onset_end+1]
+                next_token_logits = logits[:, -1, :]  # [batch_size, full_vocab_size]
+                
+                # Filter to only chord tokens (onset + hold)
+                chord_logits = next_token_logits[:, chord_token_start:total_vocab_size]
 
                 # Apply temperature scaling
                 chord_logits = chord_logits / temperature
@@ -194,35 +194,19 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255, t
                 # Apply top-k filtering
                 if top_k > 0:
                     top_k_vals, top_k_indices = torch.topk(chord_logits, min(top_k, chord_logits.size(-1)), dim=-1)
-                    chord_logits = torch.full_like(chord_logits, float('-inf'))
-                    chord_logits.scatter_(-1, top_k_indices, top_k_vals)
+                    filtered_logits = torch.full_like(chord_logits, float('-inf'))
+                    filtered_logits.scatter_(-1, top_k_indices, top_k_vals)
+                    chord_logits = filtered_logits
                 
-                # Sample new chord tokens - exactly like debug version
+                # Sample chord tokens (model chooses onset vs hold)
                 chord_probs = F.softmax(chord_logits, dim=-1)
                 sampled_indices = torch.multinomial(chord_probs, 1).squeeze(-1)
-                sampled_chord_tokens = sampled_indices + chord_onset_start
+                sampled_chord_tokens = sampled_indices + chord_token_start
                 
-                # Chord continuation logic - exactly like debug version
-                for seq_idx in range(batch_size):
-                    if t == 1:
-                        # First timestep: always use new chord - exactly like debug version
-                        chord_sequences[seq_idx, t] = sampled_chord_tokens[seq_idx]
-                        current_chords[seq_idx] = sampled_chord_tokens[seq_idx]
-                        chord_durations[seq_idx] = 1
-                    else:
-                        # Subsequent timesteps: decide whether to continue or start new chord - exactly like debug version
-                        # Simple heuristic: 70% chance to continue if duration < 16 (4 beats), otherwise new chord
-                        if chord_durations[seq_idx] < 16 and torch.rand(1).item() < 0.7:
-                            # Continue current chord (use hold token) - exactly like debug version
-                            chord_sequences[seq_idx, t] = current_chords[seq_idx] + hold_token_offset
-                            chord_durations[seq_idx] += 1
-                        else:
-                            # Start new chord - exactly like debug version
-                            chord_sequences[seq_idx, t] = sampled_chord_tokens[seq_idx]
-                            current_chords[seq_idx] = sampled_chord_tokens[seq_idx]
-                            chord_durations[seq_idx] = 1
+                # Store the model's natural prediction (no manual timing logic)
+                chord_sequences[:, t] = sampled_chord_tokens
             
-            # Create interleaved sequences for this batch - exactly like debug version
+            # Create interleaved sequences for this batch
             for seq_idx in range(batch_size):
                 interleaved = []
                 for t in range(seq_len):
@@ -230,7 +214,7 @@ def generate_online(model, dataloader, tokenizer_info, device, max_length=255, t
                     interleaved.append(melody_sequences[seq_idx, t].item())
                 generated_sequences.append(interleaved)
             
-            # Log progress for first batch like debug version
+            # Log progress for first batch
             if batch_idx == 0:
                 print(f"Generated {len(generated_sequences)} sequences from first batch")
                 print(f"First sequence length: {len(generated_sequences[0])}")

@@ -398,12 +398,13 @@ def calculate_synchronization_metrics(sequences: List[np.ndarray], tokenizer_inf
         if not note_onsets or not chord_onsets:
             continue
             
-        # For each note onset, find the closest chord onset
-        for n_onset in note_onsets:
-            # Find the closest chord onset
-            distances = [abs(c_onset - n_onset) for c_onset in chord_onsets]
-            if distances:
-                onset_intervals.append(min(distances))
+        # For each chord onset, find the nearest preceding melody note (fixed bug)
+        for c_onset in chord_onsets:
+            # Find nearest preceding melody note
+            preceding_notes = [n for n in note_onsets if n <= c_onset]
+            if preceding_notes:
+                nearest_preceding = max(preceding_notes)
+                onset_intervals.append(c_onset - nearest_preceding)
 
     avg_interval = np.mean(onset_intervals) if onset_intervals else 0
     return {"delta_chord_note_onset_interval": avg_interval}
@@ -471,10 +472,12 @@ def calculate_emd_metrics(generated_sequences: List[np.ndarray],
                 chord_onsets.append(c['start'])
             chord_onsets = np.array(chord_onsets)
             
-            for n_onset in note_onsets:
-                if len(chord_onsets) > 0:
-                    # Find minimum distance to any chord onset
-                    intervals.append(np.min(np.abs(chord_onsets - n_onset)))
+            for c_onset in chord_onsets:
+                # Find nearest preceding melody note
+                preceding_notes = [n for n in note_onsets if n <= c_onset]
+                if preceding_notes:
+                    nearest_preceding = max(preceding_notes)
+                    intervals.append(c_onset - nearest_preceding)
         return np.array(intervals)
 
     # Get intervals for both sets

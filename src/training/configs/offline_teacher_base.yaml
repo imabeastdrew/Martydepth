@@ -13,7 +13,7 @@ max_sequence_length: 256
 dropout: 0.1
 
 # --- Training loop (Paper Spec) ---
-learning_rate: 1.0e-4  # Reduced for T5 stability with Adam
+learning_rate: 1.0e-3  # Reduced for T5 stability with Adam
 weight_decay: 0.01
 max_epochs: 50
 warmup_steps: 1000
