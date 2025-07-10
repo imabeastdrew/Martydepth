@@ -2,7 +2,7 @@
 
 # --- Data settings ---
 data_dir: data/interim
-batch_size: 256
+batch_size: 128
 num_workers: 2
 
 # --- Model architecture (Paper Spec: 8 layers total) ---
@@ -13,10 +13,10 @@ max_sequence_length: 256
 dropout: 0.1
 
 # --- Training loop (Paper Spec) ---
-learning_rate: 1.0e-3  # Good starting point for AdamW with T5
+learning_rate: 5.0e-4  # Good starting point for AdamW with T5
 weight_decay: 0.01  # Added for AdamW - helps with regularization
-max_epochs: 50
-warmup_steps: 1000
+max_epochs: 100
+warmup_steps: 500
 gradient_clip_val: 1.0
 log_every_n_steps: 100
 
