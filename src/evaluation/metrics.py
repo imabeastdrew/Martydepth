@@ -29,6 +29,10 @@ def validate_interleaved_sequences(sequences: List[np.ndarray], tokenizer_info: 
     melody_vocab_size = tokenizer_info.get('melody_vocab_size', MELODY_VOCAB_SIZE)
     
     for i, seq in enumerate(sequences[:3]):  # Check first 3 sequences
+        # Ensure sequence is a numpy array for consistent processing
+        if not isinstance(seq, np.ndarray):
+            seq = np.array(seq)
+            
         if len(seq) == 0:
             continue
             
@@ -37,8 +41,8 @@ def validate_interleaved_sequences(sequences: List[np.ndarray], tokenizer_info: 
                            "Interleaved sequences must have even length [chord_0, melody_0, chord_1, melody_1, ...]")
         
         # Check if all even indices (chord positions) have chord-like tokens
-        chord_tokens = seq[0::2]
-        melody_tokens = seq[1::2]
+        chord_tokens = np.array(seq[0::2])  # Convert to numpy array for comparison
+        melody_tokens = np.array(seq[1::2])  # Convert to numpy array for comparison
         
         # Check if this looks like a chord-only sequence (common mistake)
         if np.all(chord_tokens >= chord_token_start) and np.all(melody_tokens >= chord_token_start):
@@ -66,6 +70,10 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
     melody_tokenizer = MIDITokenizer()  # Create tokenizer instance
     
     for seq in sequences:
+        # Ensure sequence is a numpy array for consistent indexing
+        if not isinstance(seq, np.ndarray):
+            seq = np.array(seq)
+            
         notes = []
         chords = []
         active_note = None  # For monophonic melody, only one note can be active
