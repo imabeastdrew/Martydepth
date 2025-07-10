@@ -77,12 +77,29 @@ def get_ground_truth_sequences(dataloader, mode='offline'):
                 sequences.append(interleaved)
         
         elif mode == 'online':
-            # Online mode target_tokens are SHIFTED due to autoregressive format
-            # This creates misalignment: [melody_0, chord_1, melody_1, chord_2, ...]
-            # which breaks the harmony calculation!
-            target_tokens = batch['target_tokens'].numpy()
-            for seq in target_tokens:
-                sequences.append(seq)
+            # Online mode requires reconstruction to proper interleaved format
+            input_tokens = batch['input_tokens'].numpy()   # [chord_0, melody_0, chord_1, ..., chord_255]
+            target_tokens = batch['target_tokens'].numpy() # [melody_0, chord_1, melody_1, ..., melody_255]
+            
+            for i in range(len(input_tokens)):
+                input_seq = input_tokens[i]    # 511 tokens
+                target_seq = target_tokens[i]  # 511 tokens
+                
+                # Reconstruct proper interleaved format: [chord_0, melody_0, chord_1, melody_1, ...]
+                # input_seq[0] = chord_0, target_seq[0] = melody_0
+                reconstructed = np.empty(512, dtype=np.int64)
+                
+                # Start with chord_0, melody_0
+                reconstructed[0] = input_seq[0]    # chord_0
+                reconstructed[1] = target_seq[0]   # melody_0
+                
+                # Continue with alternating pattern
+                for j in range(1, 256):  # 255 more pairs
+                    if j < len(input_seq) and (j*2 - 1) < len(target_seq):
+                        reconstructed[j*2] = target_seq[j*2 - 1]     # chord_j from target (shifted back)
+                        reconstructed[j*2 + 1] = input_seq[j]        # melody_j from input
+                
+                sequences.append(reconstructed)
     
     print(f"Extracted {len(sequences)} sequences")
     return sequences
