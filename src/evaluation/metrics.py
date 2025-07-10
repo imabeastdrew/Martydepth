@@ -95,10 +95,10 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
                         notes.append({'pitch': active_note['pitch'], 'start': active_note['start'], 'end': time_step})
                         active_note = None
             
-            # --- Chord Parsing (FIXED) ---
-            chord_silence_token = tokenizer_info.get("chord_silence_token", 0)
+            # --- Chord Parsing (Updated for unified silence token) ---
+            silence_token = SILENCE_TOKEN  # Use unified silence token (88)
             
-            if chord_token == chord_silence_token:
+            if chord_token == silence_token:
                 # Chord silence - end current chord if any
                 if active_chord:
                     chords.append({'token': active_chord['token'], 'start': active_chord['start'], 'end': time_step})
@@ -168,7 +168,7 @@ TEST_SET_BASELINES = {
     "chord_length_entropy": 2.1701,
     "onset_interval_emd_internal_variation": 28.8910,
     "onset_interval_emd_perfect_sync": 0.0000,
-    "description": "Baselines calculated from test set ground truth with fixed preprocessing"
+    "description": "Baselines calculated from test set ground truth with unified silence token (88) implementation"
 }
 
 def print_baseline_comparison(harmony_metrics: Dict, emd_metrics: Dict):
@@ -280,15 +280,14 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
     in_harmony_frames = 0
     total_frames = 0
     
-    # Get silence token values from config
-    melody_silence_token = SILENCE_TOKEN
-    chord_silence_token = tokenizer_info.get("chord_silence_token", 0)
+    # Get silence token values from config - now both use unified silence token
+    silence_token = SILENCE_TOKEN  # Unified silence token (88) for both melody and chords
     token_to_chord = tokenizer_info.get("token_to_chord", {})
 
     for data in parsed_data:
         for note in data['notes']:
             # Skip silence notes
-            if note['pitch'] == melody_silence_token:
+            if note['pitch'] == silence_token:
                 continue
                 
             # For each frame in the note's duration
@@ -301,7 +300,7 @@ def calculate_harmony_metrics(sequences: List[np.ndarray], tokenizer_info: Dict)
                         break
                 
                 # Skip if no chord or silence chord
-                if not active_chord or active_chord['token'] == chord_silence_token:
+                if not active_chord or active_chord['token'] == silence_token:
                     continue
                     
                 # Get chord info and check harmony - include all chord frames (onset and hold)

@@ -4,7 +4,7 @@
     "total_vocab_size": 4979,
     "pad_token_id": 178,
     "chord_token_start": 179,
-    "chord_silence_token": 0,
+    "chord_silence_token": 88,
     "midi_range": {
         "min": -27,
         "max": 60

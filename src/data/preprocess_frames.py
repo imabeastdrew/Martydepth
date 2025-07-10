@@ -98,8 +98,8 @@ class ChordTokenizer:
         self.token_offset = CHORD_TOKEN_START
         # Track unique interval patterns for analysis
         self.interval_patterns = set()
-        # Special tokens - use 0 for silence (same as melody) instead of PAD_TOKEN
-        self.silence_token = 0  # Use 0 for chord silence, same as melody silence
+        # Special tokens - use unified silence token (88) instead of 0
+        self.silence_token = SILENCE_TOKEN  # Use unified silence token (88)
         self.pad_token = PAD_TOKEN
         
     def _find_or_add_pattern(self, root: int, intervals: List[int], inversion: int) -> int:
@@ -485,7 +485,7 @@ def save_processed_data(sequences: List[FrameSequence], chord_tokenizer: ChordTo
         "total_vocab_size": total_vocab_size,
         "pad_token_id": PAD_TOKEN,
         "chord_token_start": CHORD_TOKEN_START,
-        "chord_silence_token": chord_tokenizer.silence_token,  # Use actual silence token (0)
+        "chord_silence_token": chord_tokenizer.silence_token,  # Use actual silence token (88)
         "midi_range": {"min": MIN_MIDI_NOTE, "max": MAX_MIDI_NOTE},
         "unique_midi_notes": UNIQUE_MIDI_NOTES,
         "token_to_chord": token_to_chord

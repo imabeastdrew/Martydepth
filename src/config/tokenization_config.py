@@ -10,7 +10,7 @@ UNIQUE_MIDI_NOTES = MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1  # 88 notes total
 
 # --- Token Types ---
 MELODY_TOKEN_START = 0  # Onset tokens start at 0
-SILENCE_TOKEN = 88  # Token for silence in melody (after the onset tokens)
+SILENCE_TOKEN = 88  # Universal silence token for both melody and chords
 
 # --- Melody Token Range (Interleaved) ---
 MELODY_ONSET_HOLD_START = 89  # Start of hold tokens (after silence token)
@@ -21,7 +21,7 @@ PAD_TOKEN = MELODY_VOCAB_SIZE  # Padding token ID (178)
 
 # --- Chord Token Range ---
 CHORD_TOKEN_START = PAD_TOKEN + 1  # Start of chord tokens (179)
-CHORD_SILENCE_TOKEN = 0  # Use 0 for chord silence (same as melody silence)
+CHORD_SILENCE_TOKEN = SILENCE_TOKEN  # Use same silence token (88) for both melody and chords
 
 # --- MIDI Conversion Functions ---
 def midi_to_token_index(midi_number: int) -> int:
