@@ -169,6 +169,46 @@ def create_interleaved_sequences(melody_tokens: np.ndarray, chord_tokens: np.nda
     
     return sequences
 
+def fix_online_sequences(generated_sequences: List, melody_sequences: List) -> List[np.ndarray]:
+    """
+    Fix online model sequences by prepending the first melody note to create proper interleaved format.
+    
+    Online models often generate sequences missing the first melody note (used as input),
+    resulting in odd-length sequences like [chord_0, melody_1, chord_1, melody_2, ...].
+    This function fixes them to proper format [chord_0, melody_0, chord_1, melody_1, ...].
+    
+    Args:
+        generated_sequences: List of sequences from online generation (possibly odd length)
+        melody_sequences: List of complete melody sequences (used to get first melody note)
+        
+    Returns:
+        List of properly formatted interleaved sequences with even length
+    """
+    fixed_sequences = []
+    
+    for i, gen_seq in enumerate(generated_sequences):
+        # Convert to list if needed
+        if isinstance(gen_seq, np.ndarray):
+            gen_seq = gen_seq.tolist()
+        
+        # Check if sequence has odd length (typical online model issue)
+        if len(gen_seq) % 2 == 1:
+            # Get the first melody note from the input sequence
+            if i < len(melody_sequences):
+                first_melody_note = melody_sequences[i][0] if hasattr(melody_sequences[i], '__getitem__') else melody_sequences[i]
+                
+                # Create proper interleaved format: [chord_0, melody_0, rest_of_sequence...]
+                fixed_seq = [gen_seq[0], first_melody_note] + gen_seq[1:]
+                fixed_sequences.append(np.array(fixed_seq))
+            else:
+                # Fallback: truncate to even length
+                fixed_sequences.append(np.array(gen_seq[:-1]))
+        else:
+            # Already even length, keep as is
+            fixed_sequences.append(np.array(gen_seq))
+    
+    return fixed_sequences
+
 # Test set baseline constants (from calculate_test_set_baselines.py output - December 2024)
 TEST_SET_BASELINES = {
     "harmony_ratio_percent": 65.88,
