@@ -140,7 +140,7 @@ def generate_offline(model: T5OfflineTeacherModel,
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Generating offline sequences"):
             melody_tokens = batch['melody_tokens'].to(device)
-            ground_truth_sequences.extend(batch['target_tokens'].cpu().numpy())
+            ground_truth_sequences.extend(batch['chord_target'].cpu().numpy())
             
             batch_size = melody_tokens.shape[0]
             seq_length = melody_tokens.shape[1]
