@@ -19,6 +19,32 @@ from src.training.utils.logging import log_model_artifact
 from src.training.utils.schedulers import get_warmup_schedule
 from src.config.tokenization_config import PAD_TOKEN
 
+class EarlyStopping:
+    """Early stopping to prevent overfitting"""
+    def __init__(self, patience=5, min_delta=0.001, verbose=True):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.verbose = verbose
+        self.counter = 0
+        self.best_loss = float('inf')
+        self.early_stop = False
+        
+    def __call__(self, val_loss):
+        if val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0
+            if self.verbose:
+                print(f"✅ Validation loss improved to {val_loss:.4f}")
+        else:
+            self.counter += 1
+            if self.verbose:
+                print(f"⚠️  No improvement for {self.counter}/{self.patience} epochs")
+            
+            if self.counter >= self.patience:
+                self.early_stop = True
+                if self.verbose:
+                    print(f"🛑 Early stopping triggered after {self.counter} epochs without improvement")
+
 def main(config: dict):
     """Main training function."""
     # --- Setup ---
@@ -37,6 +63,13 @@ def main(config: dict):
         name=run_name,
         config=config,
         job_type="offline_training"
+    )
+
+    # --- Initialize Early Stopping ---
+    early_stopping = EarlyStopping(
+        patience=config.get('early_stopping_patience', 5),
+        min_delta=config.get('early_stopping_min_delta', 0.001),
+        verbose=True
     )
 
     # --- Dataloaders ---
@@ -87,49 +120,40 @@ def main(config: dict):
 
     wandb.watch(model, log='all')
 
+    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters.")
+
+    # GPU memory tracking
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"GPU memory at start: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB")
+
     # --- Smoke Test ---
-    if config['smoke_test']:
+    if config.get('smoke_test', False):
         print("\n--- Starting Smoke Test ---")
         
-        # Override config with minimal values for smoke test
-        smoke_config = config.copy()
-        smoke_config.update({
-            'batch_size': 2,  # Minimal batch size
-            'max_sequence_length': 32,  # Shorter sequences
-            'num_workers': 0,  # No parallel loading
-        })
+        # Create a smaller smoke test model
+        smoke_model = T5OfflineTeacherModel(
+            melody_vocab_size=config['melody_vocab_size'],
+            chord_vocab_size=config['chord_vocab_size'],
+            embed_dim=config['embed_dim'],
+            num_heads=config['num_heads'],
+            num_layers=config['num_layers'],
+            dropout=config['dropout'],
+            max_seq_length=config['max_sequence_length'],
+            pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN),
+            total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)
+        ).to(device)
         
         try:
             print("1. Testing data loading...")
-            # Create minimal dataloader
-            smoke_loader, _ = create_dataloader(
-                data_dir=Path(config['data_dir']),
-                split="valid",  # Use validation set (usually smaller)
-                batch_size=smoke_config['batch_size'],
-                num_workers=smoke_config['num_workers'],
-                sequence_length=smoke_config['max_sequence_length'],
-                mode='offline',
-                shuffle=False  # No need to shuffle for smoke test
-            )
+            # Get a single batch
+            batch = next(iter(train_loader))
+            print(f"   Batch keys: {list(batch.keys())}")
             
-            print("2. Testing model initialization...")
-            # Create model with minimal config
-            smoke_model = T5OfflineTeacherModel(
-                melody_vocab_size=config['melody_vocab_size'],
-                chord_vocab_size=config['chord_vocab_size'],
-                embed_dim=config['embed_dim'],
-                num_heads=config['num_heads'],
-                num_layers=config['num_layers'],
-                dropout=config['dropout'],
-                max_seq_length=smoke_config['max_sequence_length'],
-                pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
-            ).to(device)
-            
-            print("3. Testing forward pass...")
-            # Get single batch
-            batch = next(iter(smoke_loader))
+            # Move to device
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
+            print("2. Testing model forward pass...")
             # Create masks
             melody_mask = (batch['melody_tokens'] == smoke_model.pad_token_id)
             chord_mask = (batch['chord_input'] == smoke_model.pad_token_id)
@@ -143,7 +167,7 @@ def main(config: dict):
                     chord_mask=chord_mask
                 )
             
-            print("4. Testing optimizer creation...")
+            print("3. Testing optimizer creation...")
             smoke_optimizer = AdamW(
                 smoke_model.parameters(),
                 lr=config['learning_rate'],
@@ -168,14 +192,19 @@ def main(config: dict):
 
     print(f"\n--- Offline Training Info ---")
     print(f"  Max epochs: {config['max_epochs']}")
+    print(f"  Early stopping patience: {config.get('early_stopping_patience', 5)}")
 
     for epoch in range(config['max_epochs']):
         print(f"\n--- Epoch {epoch+1}/{config['max_epochs']} ---")
         
+        # GPU memory tracking
+        if torch.cuda.is_available():
+            print(f"GPU memory at start of epoch: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB")
+        
         # Training
         model.train()
         total_train_loss = 0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1} Training")
+        pbar = tqdm(train_loader, desc=f"Training")
         for batch in pbar:
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
@@ -215,7 +244,8 @@ def main(config: dict):
         model.eval()
         total_val_loss = 0
         with torch.no_grad():
-            for batch in val_loader:
+            pbar_val = tqdm(val_loader, desc="Validating")
+            for batch in pbar_val:
                 batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
                 # Create masks
@@ -235,10 +265,11 @@ def main(config: dict):
                     ignore_index=model.pad_token_id
                 )
                 total_val_loss += loss.item()
+                pbar_val.set_postfix({'loss': loss.item()})
         
         avg_val_loss = total_val_loss / len(val_loader)
         
-        print(f"\nEpoch {epoch+1} | Avg Train Loss: {avg_train_loss:.4f} | Avg Val Loss: {avg_val_loss:.4f}")
+        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Valid Loss: {avg_val_loss:.4f}")
         wandb.log({
             'train/epoch_loss': avg_train_loss,
             'valid/epoch_loss': avg_val_loss,
@@ -248,18 +279,26 @@ def main(config: dict):
         # Checkpointing
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            print(f"  New best validation loss! Saving model artifact...")
+            print(f"\nSaved checkpoint with validation loss: {avg_val_loss:.4f}")
             log_model_artifact(
                 model,
-                f"offline_teacher_epoch_{epoch+1}_loss_{avg_val_loss:.2f}",
+                f"offline_teacher_epoch_{epoch+1}_loss_{avg_val_loss:.4f}",
                 tokenizer_info=tokenizer_info,
                 metadata={"val_loss": avg_val_loss, "epoch": epoch+1, **config}
             )
+        
+        # Early stopping check
+        early_stopping(avg_val_loss)
+        if early_stopping.early_stop:
+            print(f"\n🛑 Early stopping at epoch {epoch+1}")
+            print(f"Best validation loss: {early_stopping.best_loss:.4f}")
+            break
             
-    print("\nTraining complete.")
+    print(f"\nTraining complete. Best validation loss: {best_val_loss:.4f}")
     wandb.run.summary.update({
         'final_epoch': epoch+1,
-        'best_val_loss': best_val_loss
+        'best_val_loss': best_val_loss,
+        'early_stopped': early_stopping.early_stop
     })
     wandb.finish()
 
