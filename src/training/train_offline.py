@@ -13,6 +13,7 @@ import yaml
 from tqdm import tqdm
 from torch.optim import AdamW  # Switched from Adafactor to AdamW
 
+from src.models.offline_teacher import OfflineTeacherModel
 from src.models.offline_teacher_t5 import T5OfflineTeacherModel
 from src.data.dataset import create_dataloader
 from src.training.utils.logging import log_model_artifact
@@ -52,8 +53,9 @@ def main(config: dict):
     print(f"Using device: {device}")
 
     # --- W&B Setup ---
+    model_type_for_name = config.get('model_type', 'custom')
     run_name = (
-        f"offline_L{config['num_layers']}_H{config['num_heads']}"
+        f"offline_{model_type_for_name}_L{config['num_layers']}_H{config['num_heads']}"
         f"_D{config['embed_dim']}_seq{config['max_sequence_length']}"
         f"_bs{config['batch_size']}_lr{config['learning_rate']}"
     )
@@ -95,19 +97,41 @@ def main(config: dict):
     
     config['melody_vocab_size'] = tokenizer_info['melody_vocab_size']
     config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
+    config['total_vocab_size'] = tokenizer_info['total_vocab_size']
     
-    # --- Model, Optimizer, Scheduler ---
-    model = T5OfflineTeacherModel(
-        melody_vocab_size=config['melody_vocab_size'],
-        chord_vocab_size=config['chord_vocab_size'],
-        embed_dim=config['embed_dim'],
-        num_heads=config['num_heads'],
-        num_layers=config['num_layers'],
-        dropout=config['dropout'],
-        max_seq_length=config['max_sequence_length'],
-        pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN),
-        total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)  # Use unified vocabulary
-    ).to(device)
+    # --- Model Creation (Configurable) ---
+    def create_model(model_type: str):
+        """Create model based on configuration"""
+        if model_type == "custom":
+            return OfflineTeacherModel(
+                melody_vocab_size=config['melody_vocab_size'],
+                chord_vocab_size=config['chord_vocab_size'],
+                embed_dim=config['embed_dim'],
+                num_heads=config['num_heads'],
+                num_layers=config['num_layers'],
+                dropout=config['dropout'],
+                max_seq_length=config['max_sequence_length'],
+                pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
+            )
+        elif model_type == "t5":
+            return T5OfflineTeacherModel(
+                melody_vocab_size=config['melody_vocab_size'],
+                chord_vocab_size=config['chord_vocab_size'],
+                embed_dim=config['embed_dim'],
+                num_heads=config['num_heads'],
+                num_layers=config['num_layers'],
+                dropout=config['dropout'],
+                max_seq_length=config['max_sequence_length'],
+                pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN),
+                total_vocab_size=config['total_vocab_size']
+            )
+        else:
+            raise ValueError(f"Unknown model_type: {model_type}. Use 'custom' or 't5'")
+    
+    model_type = config.get('model_type', 'custom')  # Default to custom model
+    model = create_model(model_type).to(device)
+    
+    print(f"🎵 Using {model_type.upper()} model architecture")
 
     # Use AdamW optimizer instead of Adafactor for better stability and simpler tuning
     optimizer = AdamW(
@@ -132,17 +156,9 @@ def main(config: dict):
         print("\n--- Starting Smoke Test ---")
         
         # Create a smaller smoke test model
-        smoke_model = T5OfflineTeacherModel(
-            melody_vocab_size=config['melody_vocab_size'],
-            chord_vocab_size=config['chord_vocab_size'],
-            embed_dim=config['embed_dim'],
-            num_heads=config['num_heads'],
-            num_layers=config['num_layers'],
-            dropout=config['dropout'],
-            max_seq_length=config['max_sequence_length'],
-            pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN),
-            total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)
-        ).to(device)
+        smoke_model_type = config.get('model_type', 'custom')
+        smoke_model = create_model(smoke_model_type).to(device)
+        print(f"   Testing {smoke_model_type.upper()} model architecture")
         
         try:
             print("1. Testing data loading...")
@@ -219,9 +235,29 @@ def main(config: dict):
                 chord_mask=chord_mask
             )
             
+            # Use chord vocab size for both models to isolate architectural differences
+            vocab_size_for_loss = config['chord_vocab_size']
+            
+            # Extract chord-only logits for T5 model (which outputs full vocab)
+            if model_type == "t5":
+                # Chord tokens start at CHORD_TOKEN_START (179) in the full vocabulary
+                from src.config.tokenization_config import CHORD_TOKEN_START
+                chord_logits = logits[:, :, CHORD_TOKEN_START:]  # [batch, seq, chord_vocab_size]
+                logits_for_loss = chord_logits
+                
+                # Adjust targets from full vocab space to chord-only space
+                # Original targets: [179, 180, ..., 4778] -> [0, 1, ..., 4599]
+                targets_for_loss = batch['chord_target'] - CHORD_TOKEN_START
+                # Handle PAD tokens (they should remain as pad_token_id for ignore_index)
+                pad_mask = (batch['chord_target'] == model.pad_token_id)
+                targets_for_loss[pad_mask] = model.pad_token_id
+            else:  # custom model already outputs chord-only
+                logits_for_loss = logits
+                targets_for_loss = batch['chord_target']  # Already in chord space
+                
             loss = nn.functional.cross_entropy(
-                logits.reshape(-1, model.total_vocab_size),
-                batch['chord_target'].reshape(-1),
+                logits_for_loss.reshape(-1, vocab_size_for_loss),
+                targets_for_loss.reshape(-1),
                 ignore_index=model.pad_token_id
             )
             
@@ -259,9 +295,29 @@ def main(config: dict):
                     chord_mask=chord_mask
                 )
                 
+                # Use chord vocab size for both models to isolate architectural differences
+                vocab_size_for_loss = config['chord_vocab_size']
+                
+                # Extract chord-only logits for T5 model (which outputs full vocab)
+                if model_type == "t5":
+                    # Chord tokens start at CHORD_TOKEN_START (179) in the full vocabulary
+                    from src.config.tokenization_config import CHORD_TOKEN_START
+                    chord_logits = logits[:, :, CHORD_TOKEN_START:]  # [batch, seq, chord_vocab_size]
+                    logits_for_loss = chord_logits
+                    
+                    # Adjust targets from full vocab space to chord-only space
+                    # Original targets: [179, 180, ..., 4778] -> [0, 1, ..., 4599]
+                    targets_for_loss = batch['chord_target'] - CHORD_TOKEN_START
+                    # Handle PAD tokens (they should remain as pad_token_id for ignore_index)
+                    pad_mask = (batch['chord_target'] == model.pad_token_id)
+                    targets_for_loss[pad_mask] = model.pad_token_id
+                else:  # custom model already outputs chord-only
+                    logits_for_loss = logits
+                    targets_for_loss = batch['chord_target']  # Already in chord space
+                    
                 loss = nn.functional.cross_entropy(
-                    logits.reshape(-1, model.total_vocab_size),
-                    batch['chord_target'].reshape(-1),
+                    logits_for_loss.reshape(-1, vocab_size_for_loss),
+                    targets_for_loss.reshape(-1),
                     ignore_index=model.pad_token_id
                 )
                 total_val_loss += loss.item()
@@ -307,6 +363,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", required=True, help="Path to the YAML configuration file.")
     parser.add_argument("--smoke_test", action="store_true", help="Run a quick check to see if model and data load.")
     parser.add_argument("--data_dir", type=str, default=None, help="Override data directory specified in the config.")
+    parser.add_argument("--model_type", type=str, choices=['custom', 't5'], default=None, 
+                       help="Override model type: 'custom' for OfflineTeacherModel, 't5' for T5OfflineTeacherModel")
     
     args = parser.parse_args()
     
@@ -315,8 +373,10 @@ if __name__ == "__main__":
         
     config['smoke_test'] = args.smoke_test
 
-    # Override data_dir if provided
+    # Override config values if provided
     if args.data_dir:
         config['data_dir'] = args.data_dir
+    if args.model_type:
+        config['model_type'] = args.model_type
         
     main(config=config) 

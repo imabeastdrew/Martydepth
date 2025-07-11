@@ -1,15 +1,15 @@
-# Base configuration for the OfflineTeacherModel - ANTI-OVERFITTING  
-# NOTE: Custom model natively outputs chord vocabulary only (no target adjustment needed)
+# Configuration for T5OfflineTeacherModel - Direct comparison with custom model
+# NOTE: T5 outputs full vocabulary but loss calculated on chord tokens only + targets adjusted to chord space
 
 # --- Model Selection ---
-model_type: custom  # Use custom OfflineTeacherModel
+model_type: t5  # Use T5OfflineTeacherModel
 
 # --- Data settings ---
 data_dir: data/interim
 batch_size: 128
 num_workers: 2
 
-# --- Model architecture (REDUCED COMPLEXITY) ---
+# --- Model architecture (SAME AS CUSTOM for fair comparison) ---
 embed_dim: 512
 num_layers: 4  # 4 encoder + 4 decoder = 8 total layers
 num_heads: 8
