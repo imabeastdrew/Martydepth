@@ -64,13 +64,33 @@ def get_ground_truth_sequences(dataloader, mode='offline'):
                 melody_seq = melody_tokens[i]
                 chord_seq = chord_tokens[i]
                 
-                # Handle length mismatch
-                min_len = min(len(melody_seq), len(chord_seq))
-                melody_seq = melody_seq[:min_len]
-                chord_seq = chord_seq[:min_len]
+                # CRITICAL FIX: Remove PAD tokens before processing (matching metrics.py fix)
+                pad_token_id = 178  # PAD_TOKEN from config
+                
+                # Find effective sequence length (before padding)
+                melody_end = len(melody_seq)
+                chord_end = len(chord_seq)
+                
+                for j in range(len(melody_seq)):
+                    if melody_seq[j] == pad_token_id:
+                        melody_end = j
+                        break
+                        
+                for j in range(len(chord_seq)):
+                    if chord_seq[j] == pad_token_id:
+                        chord_end = j
+                        break
+                
+                # Use the shorter of the two non-padded lengths
+                effective_len = min(melody_end, chord_end)
+                if effective_len == 0:
+                    continue  # Skip empty sequences
+                    
+                melody_seq = melody_seq[:effective_len]
+                chord_seq = chord_seq[:effective_len]
                 
                 # Create interleaved sequence
-                interleaved = np.empty(min_len * 2, dtype=np.int64)
+                interleaved = np.empty(effective_len * 2, dtype=np.int64)
                 interleaved[0::2] = chord_seq   # Even indices: chords
                 interleaved[1::2] = melody_seq  # Odd indices: melody
                 

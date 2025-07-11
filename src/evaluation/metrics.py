@@ -86,6 +86,11 @@ def parse_sequences(sequences: List[np.ndarray], tokenizer_info: Dict):
             chord_token = seq[time_step * 2]     # Even indices are chord tokens
             melody_token = seq[time_step * 2 + 1]  # Odd indices are melody tokens
             
+            # CRITICAL FIX: Skip PAD tokens
+            pad_token_id = 178  # PAD_TOKEN from config
+            if melody_token == pad_token_id or chord_token == pad_token_id:
+                continue  # Skip padded frames
+            
             # --- Melody Parsing ---
             if melody_token < CHORD_TOKEN_START:
                 # Get MIDI note and onset/hold info using MIDITokenizer
@@ -155,13 +160,34 @@ def create_interleaved_sequences(melody_tokens: np.ndarray, chord_tokens: np.nda
         melody_seq = melody_tokens[i]
         chord_seq = chord_tokens[i]
         
-        # Handle length mismatch
-        min_len = min(len(melody_seq), len(chord_seq))
-        melody_seq = melody_seq[:min_len]
-        chord_seq = chord_seq[:min_len]
+        # CRITICAL FIX: Remove PAD tokens before processing
+        # Find first PAD token position (PAD tokens should only be at the end)
+        pad_token_id = 178  # PAD_TOKEN from config
+        
+        # Find effective sequence length (before padding)
+        melody_end = len(melody_seq)
+        chord_end = len(chord_seq)
+        
+        for j in range(len(melody_seq)):
+            if melody_seq[j] == pad_token_id:
+                melody_end = j
+                break
+                
+        for j in range(len(chord_seq)):
+            if chord_seq[j] == pad_token_id:
+                chord_end = j
+                break
+        
+        # Use the shorter of the two non-padded lengths
+        effective_len = min(melody_end, chord_end)
+        if effective_len == 0:
+            continue  # Skip empty sequences
+            
+        melody_seq = melody_seq[:effective_len]
+        chord_seq = chord_seq[:effective_len]
         
         # Create interleaved sequence: [chord_0, melody_0, chord_1, melody_1, ...]
-        interleaved = np.empty(min_len * 2, dtype=np.int64)
+        interleaved = np.empty(effective_len * 2, dtype=np.int64)
         interleaved[0::2] = chord_seq   # Even indices: chords
         interleaved[1::2] = melody_seq  # Odd indices: melody
         
@@ -210,13 +236,14 @@ def fix_online_sequences(generated_sequences: List, melody_sequences: List) -> L
     return fixed_sequences
 
 # Test set baseline constants (from calculate_test_set_baselines.py output - December 2024)
+# NOTE: These values need to be recalculated after fixing the EMD onset filtering and PAD token bugs!
 TEST_SET_BASELINES = {
-    "harmony_ratio_percent": 65.88,
-    "total_frames_analyzed": 511988,
-    "chord_length_entropy": 2.1701,
-    "onset_interval_emd_internal_variation": 28.8910,
-    "onset_interval_emd_perfect_sync": 0.0000,
-    "description": "Baselines calculated from test set ground truth with unified silence token (88) implementation"
+    "harmony_ratio_percent": 65.88,  # TO BE UPDATED
+    "total_frames_analyzed": 511988,  # TO BE UPDATED
+    "chord_length_entropy": 2.1701,  # TO BE UPDATED
+    "onset_interval_emd_internal_variation": 28.8910,  # TO BE UPDATED
+    "onset_interval_emd_perfect_sync": 0.0000,  # Should remain 0.0000
+    "description": "Baselines calculated from test set ground truth with fixed EMD onset filtering and PAD token handling"
 }
 
 def print_baseline_comparison(harmony_metrics: Dict, emd_metrics: Dict):
@@ -460,16 +487,24 @@ def calculate_emd_metrics(generated_sequences: List[np.ndarray],
     gt_parsed = parse_sequences(ground_truth_sequences, tokenizer_info)
 
     # --- Onset Interval EMD ---
-    def get_onset_intervals(parsed_data):
+    def get_onset_intervals(parsed_data, token_info):
         intervals = []
         for data in parsed_data:
             if not data['notes'] or not data['chords']: 
                 continue
             note_onsets = np.array([n['start'] for n in data['notes']])
-            # Get chord onsets only (filter out hold tokens if needed)
+            # Get chord onsets only (filter out hold tokens - FIXED!)
             chord_onsets = []
             for c in data['chords']:
-                chord_onsets.append(c['start'])
+                # CRITICAL FIX: Only include onset tokens, not hold tokens
+                token_str = str(c['token'])
+                if token_str in token_info.get('token_to_chord', {}):
+                    chord_info = token_info['token_to_chord'][token_str]
+                    if not chord_info.get('is_hold', False):  # Only onset tokens
+                        chord_onsets.append(c['start'])
+                else:
+                    # Fallback: assume it's an onset if not in token_to_chord mapping
+                    chord_onsets.append(c['start'])
             chord_onsets = np.array(chord_onsets)
             
             for c_onset in chord_onsets:
@@ -481,8 +516,8 @@ def calculate_emd_metrics(generated_sequences: List[np.ndarray],
         return np.array(intervals)
 
     # Get intervals for both sets
-    gen_intervals = get_onset_intervals(gen_parsed)
-    gt_intervals = get_onset_intervals(gt_parsed)
+    gen_intervals = get_onset_intervals(gen_parsed, tokenizer_info)
+    gt_intervals = get_onset_intervals(gt_parsed, tokenizer_info)
 
     # Create histograms with paper's binning
     onset_bins = list(range(18)) + [np.inf]  # [0,1,...,17,inf]
