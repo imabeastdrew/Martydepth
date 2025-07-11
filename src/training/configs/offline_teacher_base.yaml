@@ -17,7 +17,7 @@ max_sequence_length: 256
 dropout: 0.2  # Increased dropout to fight overfitting
 
 # --- Training loop (ANTI-OVERFITTING) ---
-max_epochs: 15  # Shorter training with early stopping
+max_epochs: 60  # Shorter training with early stopping
 learning_rate: 1.0e-5  # Keep stable learning rate
 weight_decay: 0.05  # Stronger L2 regularization
 warmup_steps: 100  # Minimal warmup
