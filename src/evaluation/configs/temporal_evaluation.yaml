@@ -1,0 +1,65 @@
+# Temporal Evaluation Configuration
+# This file contains all parameters for running temporal evaluation with pure WandB logging
+
+# Model Artifacts (UPDATE THESE WITH YOUR ACTUAL MODEL PATHS)
+online_artifact: "marty1ai/martydepth/online_transformer_model_4lkq96rn:v145
+offline_artifact: "marty1ai/martydepth/offline_teacher_model_y3lk5yki:v18"
+
+# Data Configuration
+data_dir: "data/interim"
+split: "test"  # Options: "test", "valid", "train"
+
+# Evaluation Parameters
+max_beats: 32  # Maximum number of beats to evaluate (32 matches paper)
+temperature: 1.0  # Sampling temperature (0.5 = conservative, 2.0 = creative)
+top_k: 50  # Top-k filtering (10 = focused, 100 = diverse)
+
+# Scenarios to evaluate
+scenarios:
+  - "primed"      # Start with ground truth context
+  - "cold_start"  # Start from scratch
+  - "perturbed"   # Inject perturbation midway
+
+# Scenario-specific parameters
+primed_context_beats: 8  # Number of beats to use as context in primed scenario
+perturbation_beat: 16    # Beat at which to inject perturbation
+
+# WandB Configuration
+wandb_project: "martydepth-temporal"
+log_to_wandb: true
+create_comparison_dashboard: true  # Create comprehensive comparison dashboard
+log_individual_runs: true  # Log separate runs for each model
+
+# Output Configuration
+output_dir: "temporal_results"
+save_json: true  # Save results as JSON for backup
+
+# WandB Visualization Features
+wandb_features:
+  line_plots: true          # Create line plots for each scenario
+  comparison_plots: true    # Create multi-model comparison plots
+  data_tables: true         # Log comprehensive data tables
+  summary_metrics: true     # Log summary statistics
+  bar_charts: true          # Create performance comparison bar charts
+
+# Performance Configuration
+num_test_sequences: 10  # Number of test sequences to evaluate (for speed)
+batch_size: 1  # Always use 1 for temporal evaluation
+
+# Advanced Parameters
+enable_error_recovery: true  # Continue evaluation even if some sequences fail
+verbose_logging: true  # Print detailed progress information
+seed: 42  # Random seed for reproducibility
+
+# Comparison Parameters
+include_baseline: true  # Calculate and include test set baseline
+compare_scenarios: true  # Create scenario comparison visualizations
+statistical_significance: true  # Calculate statistical significance of differences
+
+# Parameter Sweep Configuration (for advanced users)
+parameter_sweep:
+  enabled: false  # Set to true to enable parameter sweep
+  temperatures: [0.7, 1.0, 1.3]
+  top_k_values: [20, 50, 100]
+  max_beats_values: [16, 32, 64]
+
