@@ -3,13 +3,13 @@
 Temporal evaluation system for measuring harmonic quality over time.
 
 This module implements step-by-step generation and evaluation to track
-how harmonic quality changes during sequence generation, similar to the
-methodology shown in research papers.
+how harmonic quality changes during sequence generation, matching the
+methodology from research papers.
 
 Supports three evaluation scenarios:
-1. Primed with ground truth - Model starts with correct context
-2. Cold start - Model starts from scratch
-3. Perturbed midway - Model gets disrupted during generation
+1. Primed with ground truth - Model starts with correct context (several beats)
+2. Cold start - Model starts with minimal context (more challenging)
+3. Perturbed midway - Melody gets transposed by tritone at beat 17
 """
 
 import torch
@@ -22,6 +22,44 @@ from pathlib import Path
 from src.evaluation.metrics import check_harmony
 from src.config.tokenization_config import SILENCE_TOKEN, CHORD_TOKEN_START, PAD_TOKEN
 from src.data.preprocess_frames import MIDITokenizer
+
+
+def transpose_melody_token(melody_token: int, semitones: int = 6) -> int:
+    """
+    Transpose a melody token by the specified number of semitones.
+    
+    Args:
+        melody_token: Original melody token
+        semitones: Number of semitones to transpose (6 = tritone)
+        
+    Returns:
+        Transposed melody token, or original if not transposable
+    """
+    # Skip non-musical tokens
+    if melody_token == PAD_TOKEN or melody_token == SILENCE_TOKEN:
+        return melody_token
+    
+    # Use MIDITokenizer to decode and re-encode
+    melody_tokenizer = MIDITokenizer()
+    midi_note, is_onset = melody_tokenizer.decode_token(melody_token)
+    
+    # Skip if not a valid melody note
+    if midi_note is None:
+        return melody_token
+    
+    # Transpose the MIDI note
+    transposed_midi = midi_note + semitones
+    
+    # Ensure we stay within valid MIDI range (0-127)
+    transposed_midi = max(0, min(127, transposed_midi))
+    
+    # Re-encode to token
+    try:
+        transposed_token = melody_tokenizer.encode_token(transposed_midi, is_onset)
+        return transposed_token
+    except:
+        # If encoding fails, return original token
+        return melody_token
 
 
 def calculate_harmony_at_timestep(melody_token: int, chord_token: int, tokenizer_info: Dict) -> Optional[float]:
@@ -73,15 +111,15 @@ def calculate_harmony_at_timestep(melody_token: int, chord_token: int, tokenizer
 
 
 def extract_scenario_sequences(input_tokens: torch.Tensor, target_tokens: torch.Tensor, 
-                             scenario: str, perturbation_beat: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
+                             scenario: str, perturbation_beat: int = 17) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Extract sequences for different evaluation scenarios.
+    Extract sequences for different evaluation scenarios following research paper methodology.
     
     Args:
         input_tokens: Input interleaved tokens [chord_0, melody_0, chord_1, melody_1, ...]
         target_tokens: Target interleaved tokens for comparison
         scenario: One of 'primed', 'cold_start', 'perturbed'
-        perturbation_beat: Beat at which to inject perturbation
+        perturbation_beat: Beat at which to inject perturbation (default: 17 from paper)
         
     Returns:
         Tuple of (context_tokens, reference_tokens) for the scenario
@@ -89,34 +127,36 @@ def extract_scenario_sequences(input_tokens: torch.Tensor, target_tokens: torch.
     batch_size, seq_len = input_tokens.shape
     
     if scenario == 'primed':
-        # Start with first 8 beats (16 tokens) of ground truth
+        # Start with several beats of ground truth (similar to RLDuet)
+        # Use first 8 beats (16 tokens) as context
         context_length = min(16, seq_len)
         context_tokens = input_tokens[:, :context_length].clone()
         reference_tokens = target_tokens.clone()
         
     elif scenario == 'cold_start':
-        # Start with just the first chord from ground truth
+        # True cold start - minimal context to avoid completely invalid input
+        # Start with just the first chord token (no melody context)
         context_tokens = input_tokens[:, :1].clone()  # Just first chord
         reference_tokens = target_tokens.clone()
         
     elif scenario == 'perturbed':
-        # Start primed, but we'll inject perturbation later
-        context_length = min(16, seq_len)
+        # Start with ground truth up to perturbation point
+        # Need enough context to reach perturbation beat (beat 17 = token index 35 for melody)
+        required_tokens = (perturbation_beat + 1) * 2  # +1 to include the perturbation beat
+        context_length = min(required_tokens, seq_len)
         context_tokens = input_tokens[:, :context_length].clone()
         reference_tokens = target_tokens.clone()
         
-        # Inject perturbation at specified beat (if within sequence)
-        perturbation_idx = perturbation_beat * 2  # Convert beat to token index
-        if perturbation_idx < seq_len:
-            # Replace chord token with a random chord from valid range
-            device = context_tokens.device
-            chord_token_start = CHORD_TOKEN_START
-            # Assume reasonable chord vocab size (adjust based on your tokenizer)
-            chord_vocab_size = 500  # Adjust this based on your actual chord vocab
-            random_chord = torch.randint(chord_token_start, 
-                                       chord_token_start + chord_vocab_size, 
-                                       (batch_size,), device=device)
-            context_tokens[:, perturbation_idx] = random_chord
+        # Apply melody transposition perturbation at specified beat
+        perturbation_melody_idx = perturbation_beat * 2 + 1  # Convert beat to melody token index
+        if perturbation_melody_idx < context_length and perturbation_melody_idx < seq_len:
+            # Transpose melody by tritone (6 semitones) as in paper
+            original_melody_token = context_tokens[:, perturbation_melody_idx].item()
+            transposed_melody_token = transpose_melody_token(original_melody_token, semitones=6)
+            context_tokens[:, perturbation_melody_idx] = transposed_melody_token
+            print(f"Online model: Applied melody transposition (+6 semitones) at beat {perturbation_beat} (token index {perturbation_melody_idx})")
+        else:
+            print(f"Warning: Cannot perturb at beat {perturbation_beat} - beyond sequence length (need index {perturbation_melody_idx}, have {context_length})")
     
     else:
         raise ValueError(f"Unknown scenario: {scenario}")
@@ -126,7 +166,8 @@ def extract_scenario_sequences(input_tokens: torch.Tensor, target_tokens: torch.
 
 def generate_online_temporal(model, dataloader, tokenizer_info: Dict, device: torch.device,
                            scenarios: List[str] = ['primed', 'cold_start', 'perturbed'],
-                           max_beats: int = 32, temperature: float = 1.0, top_k: int = 50) -> Dict:
+                           max_beats: int = 32, temperature: float = 1.0, top_k: int = 50,
+                           perturbation_beat: int = 17) -> Dict:
     """
     Generate sequences step-by-step for online model while tracking harmony quality at each beat.
     
@@ -139,6 +180,7 @@ def generate_online_temporal(model, dataloader, tokenizer_info: Dict, device: to
         max_beats: Maximum number of beats to evaluate
         temperature: Sampling temperature
         top_k: Top-k filtering for sampling
+        perturbation_beat: Beat at which to apply perturbation (default: 17 from paper)
         
     Returns:
         Dict with timestep-by-timestep metrics for each scenario
@@ -153,6 +195,7 @@ def generate_online_temporal(model, dataloader, tokenizer_info: Dict, device: to
     results = {scenario: {'harmony_scores': [], 'beat_numbers': []} for scenario in scenarios}
     
     print(f"Running temporal evaluation for online model with scenarios: {scenarios}")
+    print(f"Perturbation will be applied at beat {perturbation_beat} (melody transposition +6 semitones)")
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Temporal Online Generation")):
@@ -160,23 +203,39 @@ def generate_online_temporal(model, dataloader, tokenizer_info: Dict, device: to
             input_tokens = batch['input_tokens'].to(device)
             target_tokens = batch['target_tokens'].to(device)
             
+            # Debug: Print sequence info for first batch
+            if batch_idx == 0:
+                print(f"Input tokens shape: {input_tokens.shape}")
+                print(f"Target tokens shape: {target_tokens.shape}")
+                print(f"Interleaved format: [chord_0, melody_0, chord_1, melody_1, ...]")
+            
             # Extract melody from the interleaved input format
             melody_sequences = input_tokens[:, 1::2]  # Every other token starting from index 1
             batch_size, melody_seq_len = melody_sequences.shape
             
-            # Limit evaluation to max_beats
-            eval_beats = min(max_beats, melody_seq_len)
+            # For interleaved format, the actual sequence length in beats is melody_seq_len
+            # But we need to be careful about the relationship between tokens and beats
+            max_possible_beats = min(melody_seq_len, input_tokens.shape[1] // 2)
+            eval_beats = min(max_beats, max_possible_beats)
+            
+            if batch_idx == 0:
+                print(f"Evaluating {eval_beats} beats (from {max_possible_beats} possible beats, input tokens: {input_tokens.shape[1]})")
+                print(f"Melody sequence length: {melody_seq_len}")
+                print(f"Required tokens for perturbation at beat {perturbation_beat}: {(perturbation_beat + 1) * 2}")
             
             # Evaluate each scenario
             for scenario in scenarios:
                 # Get scenario-specific context
                 context_tokens, reference_tokens = extract_scenario_sequences(
-                    input_tokens, target_tokens, scenario
+                    input_tokens, target_tokens, scenario, perturbation_beat
                 )
                 
                 # Initialize generation sequence
                 generated_tokens = context_tokens.clone()
                 scenario_harmony_scores = []
+                
+                # For perturbed scenario, continue applying transposition to new melody tokens
+                apply_transposition = (scenario == 'perturbed')
                 
                 # Generate step by step
                 for beat in range(eval_beats):
@@ -213,13 +272,24 @@ def generate_online_temporal(model, dataloader, tokenizer_info: Dict, device: to
                         sampled_indices = torch.multinomial(chord_probs, 1).squeeze(-1)
                         sampled_chord_tokens = sampled_indices + chord_token_start
                         
-                        # Add the generated chord and corresponding melody
-                        if token_idx + 1 < melody_sequences.shape[1]:
+                        # Get the corresponding melody token with bounds checking
+                        if beat < melody_seq_len:
+                            melody_token = melody_sequences[:, beat]
+                            
+                            # Apply transposition if in perturbed scenario and beyond perturbation point
+                            if apply_transposition and beat >= perturbation_beat:
+                                melody_token = transpose_melody_token(melody_token.item(), semitones=6)
+                                melody_token = torch.tensor([melody_token], device=device)
+                            
+                            # Add the generated chord and corresponding melody
                             new_tokens = torch.stack([
                                 sampled_chord_tokens,
-                                melody_sequences[:, beat]
+                                melody_token
                             ], dim=1)  # [batch_size, 2]
                             generated_tokens = torch.cat([generated_tokens, new_tokens], dim=1)
+                        else:
+                            # If we're beyond the melody sequence, break
+                            break
                     
                     # Calculate harmony at this beat
                     if token_idx + 1 < generated_tokens.shape[1]:
@@ -263,7 +333,8 @@ def generate_online_temporal(model, dataloader, tokenizer_info: Dict, device: to
 
 def generate_offline_temporal(model, dataloader, tokenizer_info: Dict, device: torch.device,
                             scenarios: List[str] = ['primed', 'cold_start', 'perturbed'],
-                            max_beats: int = 32, temperature: float = 1.0, top_k: int = 50) -> Dict:
+                            max_beats: int = 32, temperature: float = 1.0, top_k: int = 50,
+                            perturbation_beat: int = 17) -> Dict:
     """
     Generate chord sequences step-by-step for offline model while tracking harmony quality.
     
@@ -276,6 +347,7 @@ def generate_offline_temporal(model, dataloader, tokenizer_info: Dict, device: t
         max_beats: Maximum number of beats to evaluate
         temperature: Sampling temperature
         top_k: Top-k filtering for sampling
+        perturbation_beat: Beat at which to apply perturbation (default: 17 from paper)
         
     Returns:
         Dict with timestep-by-timestep metrics for each scenario
@@ -291,18 +363,41 @@ def generate_offline_temporal(model, dataloader, tokenizer_info: Dict, device: t
     results = {scenario: {'harmony_scores': [], 'beat_numbers': []} for scenario in scenarios}
     
     print(f"Running temporal evaluation for offline model with scenarios: {scenarios}")
+    print(f"Perturbation will be applied at beat {perturbation_beat} (melody transposition +6 semitones)")
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Temporal Offline Generation")):
             melody_tokens = batch['melody_tokens'].to(device)
             ground_truth_chord_tokens = batch['chord_target'].to(device)
             
+            # Debug: Print sequence info for first batch
+            if batch_idx == 0:
+                print(f"Melody tokens shape: {melody_tokens.shape}")
+                print(f"Ground truth chord tokens shape: {ground_truth_chord_tokens.shape}")
+                print(f"Direct format: melody[i] paired with chord[i]")
+            
             batch_size, seq_length = melody_tokens.shape
             eval_beats = min(max_beats, seq_length)
+            
+            if batch_idx == 0:
+                print(f"Evaluating {eval_beats} beats (from {seq_length} possible beats)")
             
             # Evaluate each scenario
             for scenario in scenarios:
                 scenario_harmony_scores = []
+                
+                # Create melody sequence for this scenario
+                melody_for_scenario = melody_tokens.clone()
+                
+                # Apply perturbation to melody if needed
+                if scenario == 'perturbed':
+                    # Transpose melody from perturbation beat onwards
+                    for beat in range(perturbation_beat, seq_length):
+                        if beat < melody_for_scenario.shape[1]:
+                            original_token = melody_for_scenario[0, beat].item()
+                            transposed_token = transpose_melody_token(original_token, semitones=6)
+                            melody_for_scenario[0, beat] = transposed_token
+                    print(f"Offline model: Applied melody transposition (+6 semitones) from beat {perturbation_beat} onwards")
                 
                 # Initialize chord generation based on scenario
                 if scenario == 'primed':
@@ -310,11 +405,11 @@ def generate_offline_temporal(model, dataloader, tokenizer_info: Dict, device: t
                     context_length = min(8, seq_length)
                     generated_chords = ground_truth_chord_tokens[:, :context_length].clone()
                 elif scenario == 'cold_start':
-                    # Start with PAD token
+                    # Start with PAD token (minimal context)
                     generated_chords = torch.full((batch_size, 1), pad_token_id, device=device)
                 elif scenario == 'perturbed':
-                    # Start primed but will inject perturbation
-                    context_length = min(8, seq_length)
+                    # Start with ground truth up to perturbation beat
+                    context_length = min(perturbation_beat, seq_length)
                     generated_chords = ground_truth_chord_tokens[:, :context_length].clone()
                 else:
                     continue
@@ -325,7 +420,7 @@ def generate_offline_temporal(model, dataloader, tokenizer_info: Dict, device: t
                     if beat >= generated_chords.shape[1]:
                         # Get model predictions using T5 interface
                         logits = model(
-                            melody_tokens=melody_tokens,
+                            melody_tokens=melody_for_scenario,
                             chord_tokens=generated_chords
                         )[:, -1, :]  # [batch_size, vocab_size]
                         
@@ -350,18 +445,10 @@ def generate_offline_temporal(model, dataloader, tokenizer_info: Dict, device: t
                         # Append to generated sequence
                         generated_chords = torch.cat([generated_chords, sampled_chord_tokens.unsqueeze(1)], dim=1)
                     
-                    # Apply perturbation if needed
-                    if scenario == 'perturbed' and beat == 16 and beat < generated_chords.shape[1]:
-                        # Inject random chord
-                        random_chord = torch.randint(chord_token_start, 
-                                                   chord_token_start + 500,  # Reasonable chord vocab size
-                                                   (batch_size,), device=device)
-                        generated_chords[:, beat] = random_chord
-                    
                     # Calculate harmony at this beat
-                    if beat < generated_chords.shape[1] and beat < melody_tokens.shape[1]:
+                    if beat < generated_chords.shape[1] and beat < melody_for_scenario.shape[1]:
                         chord_token = generated_chords[0, beat].item()
-                        melody_token = melody_tokens[0, beat].item()
+                        melody_token = melody_for_scenario[0, beat].item()
                         
                         harmony_score = calculate_harmony_at_timestep(
                             melody_token, chord_token, tokenizer_info
