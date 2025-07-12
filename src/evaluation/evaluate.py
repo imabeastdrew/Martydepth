@@ -146,7 +146,17 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         
         # Load state dict
         # Note: Using weights_only=True is a security best practice
-        model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+        
+        # Handle different checkpoint formats
+        if 'model_state_dict' in checkpoint:
+            # Full checkpoint format
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"Loaded model from full checkpoint (epoch {checkpoint.get('epoch', 'unknown')})")
+        else:
+            # Direct state dict format
+            model.load_state_dict(checkpoint)
+            print("Loaded model from direct state dict")
         model.eval()
         
         # Check model weights for NaN values
