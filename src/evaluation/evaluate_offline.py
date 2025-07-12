@@ -87,8 +87,6 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         print("Falling back to loading tokenizer info from local data directory...")
         
         # Fallback: Load from local data directory
-        from pathlib import Path
-        import json
         
         tokenizer_path = Path("data/interim/test/tokenizer_info.json")
         if tokenizer_path.exists():
