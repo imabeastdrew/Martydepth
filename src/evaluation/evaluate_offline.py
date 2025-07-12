@@ -108,44 +108,21 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
     # Download model artifact files
     with tempfile.TemporaryDirectory() as tmpdir:
         artifact_dir = model_artifact.download(root=tmpdir)
-        
-        # List all files in the artifact directory to find the model file
         artifact_path = Path(artifact_dir)
-        all_files = list(artifact_path.glob("*"))
-        print(f"Files in artifact directory: {[f.name for f in all_files]}")
         
-        # Look for common model file patterns
-        model_file_candidates = [
-            "model.pth",
-            "pytorch_model.bin", 
-            "model.bin",
-            "checkpoint.pth",
-            "model_state_dict.pth"
-        ]
+        # Look for offline teacher model files
+        model_files = list(artifact_path.glob("offline_teacher_epoch_*.pth"))
+        if not model_files:
+            # Fallback to any .pth file
+            model_files = list(artifact_path.glob("*.pth"))
         
-        model_path = None
-        for candidate in model_file_candidates:
-            candidate_path = artifact_path / candidate
-            if candidate_path.exists():
-                model_path = candidate_path
-                print(f"Found model file: {candidate}")
-                break
+        if not model_files:
+            all_files = list(artifact_path.glob("*"))
+            raise FileNotFoundError(f"No model file found in artifact. Available files: {[f.name for f in all_files]}")
         
-        if model_path is None:
-            # If no standard names found, look for any .pth or .bin files
-            pth_files = list(artifact_path.glob("*.pth"))
-            bin_files = list(artifact_path.glob("*.bin"))
-            
-            if pth_files:
-                model_path = pth_files[0]
-                print(f"Using .pth file: {model_path.name}")
-            elif bin_files:
-                model_path = bin_files[0]
-                print(f"Using .bin file: {model_path.name}")
-            else:
-                raise FileNotFoundError(f"No model file found in artifact. Available files: {[f.name for f in all_files]}")
-        
-        print(f"Loading model from: {model_path}")
+        # Use the first (or only) model file found
+        model_path = model_files[0]
+        print(f"Loading offline model from: {model_path.name}")
         
         config['melody_vocab_size'] = tokenizer_info['melody_vocab_size']
         config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']

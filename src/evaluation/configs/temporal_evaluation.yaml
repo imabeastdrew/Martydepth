@@ -3,7 +3,7 @@
 
 # Model Artifacts (UPDATE THESE WITH YOUR ACTUAL MODEL PATHS)
 online_artifact: "marty1ai/martydepth/online_transformer_model_4lkq96rn:v145"
-offline_artifact: "marty1ai/martydepth/offline_teacher_model_y3lk5yki:v18"
+offline_artifact: "marty1ai/martydepth/offline_teacher_model_y3lk5yki:v55"
 
 # Data Configuration
 data_dir: "data/interim"
