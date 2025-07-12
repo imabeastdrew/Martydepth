@@ -118,7 +118,9 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         vocab_size = tokenizer_info['total_vocab_size']
 
         # Handle different possible key names for max_seq_length
-        max_seq_length = config.get('max_sequence_length') or 512
+        # For online model, the max_seq_length needs to account for interleaved format
+        base_seq_length = config.get('max_sequence_length') or config.get('max_seq_length') or 256
+        max_seq_length = base_seq_length * 2  # Double for interleaved sequences [chord, melody, chord, melody, ...]
 
         # Set default values for missing config parameters
         dropout = config.get('dropout', 0.1)  # Default to 0.1 if not specified
