@@ -64,14 +64,54 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
     run = model_artifact.logged_by()
     config = dict(run.config)
     
+    # Extract run ID from the model artifact to find the corresponding tokenizer artifact
+    run_id = run.id
+    
+    # Parse the artifact path to get entity and project
+    parts = artifact_path.split('/')
+    if len(parts) >= 3:
+        entity = parts[0]
+        project = parts[1]
+        tokenizer_artifact_path = f"{entity}/{project}/tokenizer_info_{run_id}:latest"
+    else:
+        raise ValueError(f"Invalid artifact path format: {artifact_path}")
+    
+    print(f"Looking for tokenizer artifact: {tokenizer_artifact_path}")
+    
+    # Load tokenizer info from separate artifact
+    try:
+        tokenizer_artifact = api.artifact(tokenizer_artifact_path, type='tokenizer')
+        print(f"Found tokenizer artifact: {tokenizer_artifact.name}")
+    except wandb.errors.CommError as e:
+        print(f"Error fetching tokenizer artifact: {e}")
+        print("Falling back to loading tokenizer info from local data directory...")
+        
+        # Fallback: Load from local data directory
+        from pathlib import Path
+        import json
+        
+        tokenizer_path = Path("data/interim/test/tokenizer_info.json")
+        if tokenizer_path.exists():
+            with open(tokenizer_path, 'r') as f:
+                tokenizer_info = json.load(f)
+            print(f"Loaded tokenizer info from local file: {tokenizer_path}")
+        else:
+            raise FileNotFoundError(f"Could not find tokenizer artifact and local tokenizer file not found at {tokenizer_path}")
+    else:
+        # Download tokenizer artifact
+        with tempfile.TemporaryDirectory() as tokenizer_tmpdir:
+            tokenizer_artifact_dir = tokenizer_artifact.download(root=tokenizer_tmpdir)
+            tokenizer_path = Path(tokenizer_artifact_dir) / "tokenizer_info.json"
+            
+            with open(tokenizer_path, 'r') as f:
+                tokenizer_info = json.load(f)
+            print("Loaded tokenizer info from WandB artifact")
+    
+    # Download model artifact files
     with tempfile.TemporaryDirectory() as tmpdir:
         artifact_dir = model_artifact.download(root=tmpdir)
         model_path = Path(artifact_dir) / "model.pth"
-        tokenizer_path = Path(artifact_dir) / "tokenizer_info.json"
         
-        with open(tokenizer_path, 'r') as f:
-            tokenizer_info = json.load(f)
-            
         config['melody_vocab_size'] = tokenizer_info['melody_vocab_size']
         config['chord_vocab_size'] = tokenizer_info['chord_vocab_size']
 
