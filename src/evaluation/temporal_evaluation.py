@@ -23,6 +23,16 @@ from src.evaluation.metrics import check_harmony
 from src.config.tokenization_config import SILENCE_TOKEN, CHORD_TOKEN_START, PAD_TOKEN
 from src.data.preprocess_frames import MIDITokenizer
 
+# Create a global tokenizer instance for efficiency
+_melody_tokenizer = None
+
+def get_melody_tokenizer():
+    """Get a singleton MIDITokenizer instance for efficiency."""
+    global _melody_tokenizer
+    if _melody_tokenizer is None:
+        _melody_tokenizer = MIDITokenizer()
+    return _melody_tokenizer
+
 
 def transpose_melody_token(melody_token: int, semitones: int = 6) -> int:
     """
@@ -39,8 +49,8 @@ def transpose_melody_token(melody_token: int, semitones: int = 6) -> int:
     if melody_token == PAD_TOKEN or melody_token == SILENCE_TOKEN:
         return melody_token
     
-    # Use MIDITokenizer to decode and re-encode
-    melody_tokenizer = MIDITokenizer()
+    # Use singleton MIDITokenizer for efficiency
+    melody_tokenizer = get_melody_tokenizer()
     midi_note, is_onset = melody_tokenizer.decode_token(melody_token)
     
     # Skip if not a valid melody note
@@ -86,8 +96,8 @@ def calculate_harmony_at_timestep(melody_token: int, chord_token: int, tokenizer
     if chord_token < CHORD_TOKEN_START:
         return None
     
-    # Get melody pitch using MIDITokenizer
-    melody_tokenizer = MIDITokenizer()
+    # Get melody pitch using singleton MIDITokenizer
+    melody_tokenizer = get_melody_tokenizer()
     midi_note, is_onset = melody_tokenizer.decode_token(melody_token)
     
     # Skip if not a valid melody note
@@ -502,7 +512,8 @@ def calculate_test_set_baseline_temporal(dataloader, tokenizer_info: Dict, max_b
     print("Calculating test set baseline temporal metrics...")
     
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Baseline Calculation")):
-        if hasattr(batch, 'input_tokens'):
+        # Fix: batch is a dictionary, not an object with attributes
+        if 'input_tokens' in batch:
             # Online format
             input_tokens = batch['input_tokens']
             batch_size, seq_len = input_tokens.shape
@@ -534,15 +545,22 @@ def calculate_test_set_baseline_temporal(dataloader, tokenizer_info: Dict, max_b
         if batch_idx >= 10:
             break
     
-    # Average across sequences
-    if harmony_scores:
-        scores_array = np.array(harmony_scores)
+    # Average across sequences with safety checks
+    if harmony_scores and len(harmony_scores) > 0:
+        # Ensure all sequences have the same length by padding with zeros
+        max_length = max(len(seq) for seq in harmony_scores)
+        padded_scores = []
+        for seq in harmony_scores:
+            padded_seq = seq + [0.0] * (max_length - len(seq))
+            padded_scores.append(padded_seq)
+        
+        scores_array = np.array(padded_scores)
         mean_harmony = np.mean(scores_array, axis=0)
         std_harmony = np.std(scores_array, axis=0)
         beat_numbers = list(range(len(mean_harmony)))
     else:
-        mean_harmony = []
-        std_harmony = []
+        mean_harmony = np.array([])
+        std_harmony = np.array([])
         beat_numbers = []
     
     return {
@@ -600,14 +618,22 @@ def log_temporal_metrics(results: Dict, model_name: str, run_name: str, project_
                     harmony_score + std_score   # Upper bound
                 ])
             
-            # Log scenario summary metrics
-            mean_harmony = np.mean(data['mean_harmony'])
-            final_harmony = data['mean_harmony'][-1] if data['mean_harmony'] else 0
+            # Log scenario summary metrics with safety checks
+            if len(data['mean_harmony']) > 0:
+                mean_harmony = np.mean(data['mean_harmony'])
+                final_harmony = data['mean_harmony'][-1]
+                initial_harmony = data['mean_harmony'][0] if len(data['mean_harmony']) > 0 else 0
+                harmony_trend = final_harmony - initial_harmony if len(data['mean_harmony']) > 1 else 0
+            else:
+                mean_harmony = 0.0
+                final_harmony = 0.0
+                initial_harmony = 0.0
+                harmony_trend = 0.0
             
             wandb.log({
                 f"{scenario}/mean_harmony": mean_harmony,
                 f"{scenario}/final_harmony": final_harmony,
-                f"{scenario}/harmony_trend": final_harmony - data['mean_harmony'][0] if len(data['mean_harmony']) > 1 else 0,
+                f"{scenario}/harmony_trend": harmony_trend,
                 "model": model_name
             })
     
