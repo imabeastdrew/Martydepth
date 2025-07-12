@@ -2,24 +2,24 @@
 
 # --- Data settings ---
 data_dir: data/interim
-batch_size: 64
+batch_size: 128
 num_workers: 2
 
 # --- Model architecture ---
-vocab_size: 4665  # Fixed: 178 melody + 4486 chord + 1 for off-by-one error
+vocab_size: 4979  # Fixed: 178 melody + 1 pad + 4800 chord = 4979 tokens (from tokenizer_info.json)
 embed_dim: 512
 num_layers: 8
 num_heads: 8
 max_sequence_length: 256  # Note: This will be doubled internally due to interleaving
-dropout: 0.1
+dropout: 0.2
 
 # --- Training loop ---
-learning_rate: 1.0e-3
-weight_decay: 0.01
-max_epochs: 50
-warmup_steps: 1000
+learning_rate: 1.0e-5
+weight_decay: 0.05
+max_epochs: 150
+warmup_steps: 100
 gradient_clip_val: 1.0
-log_every_n_steps: 100
+log_every_n_steps: 50
 
 # --- W&B Logging ---
 wandb_project: "martydepth"
