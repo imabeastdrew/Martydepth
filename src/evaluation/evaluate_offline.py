@@ -14,6 +14,7 @@ from typing import Dict
 from tqdm import tqdm
 
 from src.models.offline_teacher_t5 import T5OfflineTeacherModel
+from src.models.offline_teacher import OfflineTeacherModel
 from src.data.dataset import create_dataloader
 from src.evaluation.metrics import (
     calculate_harmony_metrics,
@@ -131,29 +132,64 @@ def load_model_from_wandb(artifact_path: str, device: torch.device):
         max_seq_length = config.get('max_seq_length') or config.get('max_sequence_length') or 256
         print(f"Using max_seq_length: {max_seq_length}")
 
-        model = T5OfflineTeacherModel(
-            melody_vocab_size=config['melody_vocab_size'],
-            chord_vocab_size=config['chord_vocab_size'],
-            embed_dim=config['embed_dim'],
-            num_heads=config['num_heads'],
-            num_layers=config['num_layers'],
-            dropout=config['dropout'],
-            max_seq_length=max_seq_length,
-            pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN),
-            total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)  # Use unified vocabulary
-        ).to(device)
-        
-        # Load state dict
+        # Load checkpoint first to inspect its structure
         checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         
-        # Handle different checkpoint formats
+        # Extract model state dict
         if 'model_state_dict' in checkpoint:
-            # Full checkpoint format
-            model.load_state_dict(checkpoint['model_state_dict'])
+            model_state_dict = checkpoint['model_state_dict']
+        else:
+            model_state_dict = checkpoint
+        
+        # Determine model type from config or infer from checkpoint structure
+        model_type = config.get('model_type', None)
+        
+        if model_type is None:
+            # Auto-detect model type from checkpoint keys
+            if 't5_model.shared.weight' in model_state_dict:
+                model_type = 't5'
+                print("Auto-detected T5 model from checkpoint keys")
+            elif 'embeddings.melody_embedding.weight' in model_state_dict:
+                model_type = 'custom'
+                print("Auto-detected custom model from checkpoint keys")
+            else:
+                # Default to custom if unsure
+                model_type = 'custom'
+                print("Could not auto-detect model type, defaulting to custom")
+        
+        print(f"Using model_type: {model_type}")
+        
+        if model_type == 'custom':
+            model = OfflineTeacherModel(
+                melody_vocab_size=config['melody_vocab_size'],
+                chord_vocab_size=config['chord_vocab_size'],
+                embed_dim=config['embed_dim'],
+                num_heads=config['num_heads'],
+                num_layers=config['num_layers'],
+                dropout=config['dropout'],
+                max_seq_length=max_seq_length,
+                pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN)
+            ).to(device)
+        elif model_type == 't5':
+            model = T5OfflineTeacherModel(
+                melody_vocab_size=config['melody_vocab_size'],
+                chord_vocab_size=config['chord_vocab_size'],
+                embed_dim=config['embed_dim'],
+                num_heads=config['num_heads'],
+                num_layers=config['num_layers'],
+                dropout=config['dropout'],
+                max_seq_length=max_seq_length,
+                pad_token_id=tokenizer_info.get('pad_token_id', PAD_TOKEN),
+                total_vocab_size=tokenizer_info.get('total_vocab_size', 4779)  # Use unified vocabulary
+            ).to(device)
+        else:
+            raise ValueError(f"Unknown model_type: {model_type}. Expected 'custom' or 't5'")
+        
+        # Load state dict (checkpoint already loaded above)
+        model.load_state_dict(model_state_dict)
+        if 'epoch' in checkpoint:
             print(f"Loaded model from full checkpoint (epoch {checkpoint.get('epoch', 'unknown')})")
         else:
-            # Direct state dict format
-            model.load_state_dict(checkpoint)
             print("Loaded model from direct state dict")
         model.eval()
         
