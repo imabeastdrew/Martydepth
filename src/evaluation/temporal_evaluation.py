@@ -590,22 +590,27 @@ def log_temporal_metrics(results: Dict, model_name: str, run_name: str, project_
     # Create comprehensive data table for all scenarios
     table_data = []
     
+    # Use a global step counter to avoid conflicts
+    global_step_counter = 0
+    
     # Log metrics for each scenario
-    for scenario, data in results.items():
+    for scenario_idx, (scenario, data) in enumerate(results.items()):
         if 'mean_harmony' in data and len(data['mean_harmony']) > 0:
-            # Log individual timestep metrics
+            # Log individual timestep metrics with unique step numbers
             for beat, harmony_score in enumerate(data['mean_harmony']):
                 std_score = data['std_harmony'][beat] if beat < len(data['std_harmony']) else 0
                 
-                # Log individual metrics
+                # Log individual metrics with unique global step
                 wandb.log({
                     f"{scenario}/harmony_quality": harmony_score,
                     f"{scenario}/harmony_std": std_score,
                     f"{scenario}/beat": beat,
                     "model": model_name,
                     "scenario": scenario,
-                    "global_step": beat
-                }, step=beat)
+                    "beat_in_scenario": beat
+                }, step=global_step_counter)
+                
+                global_step_counter += 1
                 
                 # Add to table data
                 table_data.append([
@@ -635,7 +640,9 @@ def log_temporal_metrics(results: Dict, model_name: str, run_name: str, project_
                 f"{scenario}/final_harmony": final_harmony,
                 f"{scenario}/harmony_trend": harmony_trend,
                 "model": model_name
-            })
+            }, step=global_step_counter)
+            
+            global_step_counter += 1
     
     # Create and log comprehensive data table
     if table_data:
@@ -735,30 +742,34 @@ def create_wandb_comparison_dashboard(online_results: Dict, offline_results: Dic
     )
     wandb.log({"master_comparison": comparison_table})
     
-    # Create scenario-specific comparison plots
+    # Create scenario-specific comparison plots (simplified without groupby)
     scenarios = ['primed', 'cold_start', 'perturbed']
     
     for scenario in scenarios:
         scenario_data = [row for row in all_data if row[1] == scenario or row[1] == 'ground_truth']
         
         if scenario_data:
-            # Create line plot for this scenario
-            plot_data = []
-            for row in scenario_data:
-                model, scen, beat, harmony, std, lower, upper = row
-                plot_data.append([beat, harmony, model])
+            # Create separate line plots for each model in this scenario
+            models = set(row[0] for row in scenario_data)
             
-            plot_table = wandb.Table(data=plot_data, columns=["Beat", "Harmony", "Model"])
-            
-            wandb.log({
-                f"{scenario}_comparison": wandb.plot.line(
-                    plot_table,
-                    "Beat", 
-                    "Harmony",
-                    groupby="Model",
-                    title=f"Model Comparison - {scenario.replace('_', ' ').title()} Scenario"
-                )
-            })
+            for model in models:
+                model_data = [row for row in scenario_data if row[0] == model]
+                if model_data:
+                    plot_data = []
+                    for row in model_data:
+                        model_name, scen, beat, harmony, std, lower, upper = row
+                        plot_data.append([beat, harmony])
+                    
+                    plot_table = wandb.Table(data=plot_data, columns=["Beat", "Harmony"])
+                    
+                    wandb.log({
+                        f"{scenario}_{model}_comparison": wandb.plot.line(
+                            plot_table,
+                            "Beat", 
+                            "Harmony",
+                            title=f"{model} - {scenario.replace('_', ' ').title()} Scenario"
+                        )
+                    })
     
     # Create overall performance summary
     summary_data = []
