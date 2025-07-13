@@ -71,8 +71,9 @@ def transpose_melody_token(melody_token: int, semitones: int = 6) -> int:
     
     # Re-encode to token
     try:
-        transposed_token = melody_tokenizer.encode_token(transposed_midi, is_onset)
-        return transposed_token
+        onset_token, hold_token = melody_tokenizer.encode_midi_note(transposed_midi)
+        # Return the appropriate token type (onset or hold)
+        return onset_token if is_onset else hold_token
     except:
         # If encoding fails, return original token
         return melody_token
