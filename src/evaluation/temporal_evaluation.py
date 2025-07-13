@@ -258,57 +258,69 @@ def generate_online_temporal(model, dataloader, tokenizer_info: Dict, device: to
                 for beat in range(eval_beats):
                     token_idx = beat * 2  # Convert beat to token index (chord position)
                     
-                    if token_idx >= generated_tokens.shape[1]:
-                        break
+                    # For cold start, we need to handle the first beat differently
+                    # because we start with only one chord token
+                    if scenario == 'cold_start' and beat == 0:
+                        # For cold start beat 0, we need to generate the first melody token
+                        # to complete the first chord-melody pair
+                        if generated_tokens.shape[1] == 1:  # Only have first chord
+                            # Get the first melody token from the original sequence
+                            if beat < melody_seq_len:
+                                melody_token = melody_sequences[:, beat]
+                                
+                                # Add the melody token to complete the first pair
+                                generated_tokens = torch.cat([generated_tokens, melody_token.unsqueeze(1)], dim=1)
                     
-                    # If we need to generate this chord token
-                    if token_idx >= context_tokens.shape[1]:
-                        # Prepare input for model
-                        current_length = generated_tokens.shape[1]
-                        model_input = generated_tokens[:, :current_length]
-                        
-                        # Get model predictions
-                        logits = model(model_input)
-                        next_token_logits = logits[:, -1, :]  # [batch_size, vocab_size]
-                        
-                        # Filter to chord tokens only
-                        chord_logits = next_token_logits[:, chord_token_start:total_vocab_size]
-                        
-                        # Apply temperature and top-k sampling
-                        chord_logits = chord_logits / temperature
-                        if top_k > 0:
-                            top_k_vals, top_k_indices = torch.topk(chord_logits, 
-                                                                 min(top_k, chord_logits.size(-1)), 
-                                                                 dim=-1)
-                            filtered_logits = torch.full_like(chord_logits, float('-inf'))
-                            filtered_logits.scatter_(-1, top_k_indices, top_k_vals)
-                            chord_logits = filtered_logits
-                        
-                        # Sample chord tokens
-                        chord_probs = torch.softmax(chord_logits, dim=-1)
-                        sampled_indices = torch.multinomial(chord_probs, 1).squeeze(-1)
-                        sampled_chord_tokens = sampled_indices + chord_token_start
-                        
-                        # Get the corresponding melody token with bounds checking
-                        if beat < melody_seq_len:
-                            melody_token = melody_sequences[:, beat]
+                    # Check if we have enough tokens for this beat
+                    if token_idx + 1 >= generated_tokens.shape[1]:
+                        # We need to generate more tokens
+                        if token_idx >= generated_tokens.shape[1]:
+                            # Need to generate chord token
+                            current_length = generated_tokens.shape[1]
+                            model_input = generated_tokens[:, :current_length]
                             
-                            # Apply transposition if in perturbed scenario and beyond perturbation point
-                            if apply_transposition and beat >= perturbation_beat:
-                                melody_token = transpose_melody_token(melody_token.item(), semitones=6)
-                                melody_token = torch.tensor([melody_token], device=device)
+                            # Get model predictions
+                            logits = model(model_input)
+                            next_token_logits = logits[:, -1, :]  # [batch_size, vocab_size]
                             
-                            # Add the generated chord and corresponding melody
-                            new_tokens = torch.stack([
-                                sampled_chord_tokens,
-                                melody_token
-                            ], dim=1)  # [batch_size, 2]
-                            generated_tokens = torch.cat([generated_tokens, new_tokens], dim=1)
-                        else:
-                            # If we're beyond the melody sequence, break
-                            break
+                            # Filter to chord tokens only
+                            chord_logits = next_token_logits[:, chord_token_start:total_vocab_size]
+                            
+                            # Apply temperature and top-k sampling
+                            chord_logits = chord_logits / temperature
+                            if top_k > 0:
+                                top_k_vals, top_k_indices = torch.topk(chord_logits, 
+                                                                     min(top_k, chord_logits.size(-1)), 
+                                                                     dim=-1)
+                                filtered_logits = torch.full_like(chord_logits, float('-inf'))
+                                filtered_logits.scatter_(-1, top_k_indices, top_k_vals)
+                                chord_logits = filtered_logits
+                            
+                            # Sample chord tokens
+                            chord_probs = torch.softmax(chord_logits, dim=-1)
+                            sampled_indices = torch.multinomial(chord_probs, 1).squeeze(-1)
+                            sampled_chord_tokens = sampled_indices + chord_token_start
+                            
+                            # Add the generated chord token
+                            generated_tokens = torch.cat([generated_tokens, sampled_chord_tokens.unsqueeze(1)], dim=1)
+                        
+                        # Now add the melody token if needed
+                        if token_idx + 1 >= generated_tokens.shape[1]:
+                            if beat < melody_seq_len:
+                                melody_token = melody_sequences[:, beat]
+                                
+                                # Apply transposition if in perturbed scenario and beyond perturbation point
+                                if apply_transposition and beat >= perturbation_beat:
+                                    melody_token = transpose_melody_token(melody_token.item(), semitones=6)
+                                    melody_token = torch.tensor([melody_token], device=device)
+                                
+                                # Add the melody token
+                                generated_tokens = torch.cat([generated_tokens, melody_token.unsqueeze(1)], dim=1)
+                            else:
+                                # If we're beyond the melody sequence, break
+                                break
                     
-                    # Calculate harmony at this beat
+                    # Calculate harmony at this beat (now we should have both tokens)
                     if token_idx + 1 < generated_tokens.shape[1]:
                         chord_token = generated_tokens[0, token_idx].item()
                         melody_token = generated_tokens[0, token_idx + 1].item()
@@ -328,18 +340,36 @@ def generate_online_temporal(model, dataloader, tokenizer_info: Dict, device: to
                 results[scenario]['harmony_scores'].append(scenario_harmony_scores)
                 results[scenario]['beat_numbers'] = list(range(len(scenario_harmony_scores)))
             
-            # Limit to a reasonable number of test sequences
-            if batch_idx >= 10:  # Evaluate on first 10 batches
-                break
+            # Process all test sequences for comprehensive evaluation
+            # Removed batch limit to use entire test set
     
-    # Average across all test sequences
+    # Average across all test sequences with improved handling
     for scenario in scenarios:
         if results[scenario]['harmony_scores']:
-            # Convert to numpy array and average
-            scores_array = np.array(results[scenario]['harmony_scores'])
-            results[scenario]['mean_harmony'] = np.mean(scores_array, axis=0)
-            results[scenario]['std_harmony'] = np.std(scores_array, axis=0)
-            results[scenario]['beat_numbers'] = list(range(len(results[scenario]['mean_harmony'])))
+            # Convert to numpy array and average, handling variable lengths
+            scores_list = results[scenario]['harmony_scores']
+            if scores_list:
+                # Find the minimum length to avoid padding issues
+                min_length = min(len(seq) for seq in scores_list)
+                if min_length > 0:
+                    # Truncate all sequences to minimum length for fair comparison
+                    truncated_scores = [seq[:min_length] for seq in scores_list]
+                    scores_array = np.array(truncated_scores)
+                    results[scenario]['mean_harmony'] = np.mean(scores_array, axis=0)
+                    results[scenario]['std_harmony'] = np.std(scores_array, axis=0)
+                    results[scenario]['beat_numbers'] = list(range(len(results[scenario]['mean_harmony'])))
+                    
+                    # Log statistics for debugging
+                    print(f"  Online {scenario}: {len(scores_list)} sequences, {min_length} beats, "
+                          f"mean harmony: {np.mean(results[scenario]['mean_harmony']):.3f}")
+                else:
+                    results[scenario]['mean_harmony'] = []
+                    results[scenario]['std_harmony'] = []
+                    results[scenario]['beat_numbers'] = []
+            else:
+                results[scenario]['mean_harmony'] = []
+                results[scenario]['std_harmony'] = []
+                results[scenario]['beat_numbers'] = []
         else:
             results[scenario]['mean_harmony'] = []
             results[scenario]['std_harmony'] = []
@@ -482,18 +512,36 @@ def generate_offline_temporal(model, dataloader, tokenizer_info: Dict, device: t
                 results[scenario]['harmony_scores'].append(scenario_harmony_scores)
                 results[scenario]['beat_numbers'] = list(range(len(scenario_harmony_scores)))
             
-            # Limit to a reasonable number of test sequences
-            if batch_idx >= 10:  # Evaluate on first 10 batches
-                break
+            # Process all test sequences for comprehensive evaluation
+            # Removed batch limit to use entire test set
     
-    # Average across all test sequences
+    # Average across all test sequences with improved handling
     for scenario in scenarios:
         if results[scenario]['harmony_scores']:
-            # Convert to numpy array and average
-            scores_array = np.array(results[scenario]['harmony_scores'])
-            results[scenario]['mean_harmony'] = np.mean(scores_array, axis=0)
-            results[scenario]['std_harmony'] = np.std(scores_array, axis=0)
-            results[scenario]['beat_numbers'] = list(range(len(results[scenario]['mean_harmony'])))
+            # Convert to numpy array and average, handling variable lengths
+            scores_list = results[scenario]['harmony_scores']
+            if scores_list:
+                # Find the minimum length to avoid padding issues
+                min_length = min(len(seq) for seq in scores_list)
+                if min_length > 0:
+                    # Truncate all sequences to minimum length for fair comparison
+                    truncated_scores = [seq[:min_length] for seq in scores_list]
+                    scores_array = np.array(truncated_scores)
+                    results[scenario]['mean_harmony'] = np.mean(scores_array, axis=0)
+                    results[scenario]['std_harmony'] = np.std(scores_array, axis=0)
+                    results[scenario]['beat_numbers'] = list(range(len(results[scenario]['mean_harmony'])))
+                    
+                    # Log statistics for debugging
+                    print(f"  Offline {scenario}: {len(scores_list)} sequences, {min_length} beats, "
+                          f"mean harmony: {np.mean(results[scenario]['mean_harmony']):.3f}")
+                else:
+                    results[scenario]['mean_harmony'] = []
+                    results[scenario]['std_harmony'] = []
+                    results[scenario]['beat_numbers'] = []
+            else:
+                results[scenario]['mean_harmony'] = []
+                results[scenario]['std_harmony'] = []
+                results[scenario]['beat_numbers'] = []
         else:
             results[scenario]['mean_harmony'] = []
             results[scenario]['std_harmony'] = []
@@ -548,23 +596,28 @@ def calculate_test_set_baseline_temporal(dataloader, tokenizer_info: Dict, max_b
             
             harmony_scores.append(batch_harmony_scores)
         
-        # Limit to reasonable number of sequences
-        if batch_idx >= 10:
-            break
+        # Process all test sequences for comprehensive baseline
+        # Removed batch limit to use entire test set
     
-    # Average across sequences with safety checks
+    # Average across sequences with improved handling
     if harmony_scores and len(harmony_scores) > 0:
-        # Ensure all sequences have the same length by padding with zeros
-        max_length = max(len(seq) for seq in harmony_scores)
-        padded_scores = []
-        for seq in harmony_scores:
-            padded_seq = seq + [0.0] * (max_length - len(seq))
-            padded_scores.append(padded_seq)
-        
-        scores_array = np.array(padded_scores)
-        mean_harmony = np.mean(scores_array, axis=0)
-        std_harmony = np.std(scores_array, axis=0)
-        beat_numbers = list(range(len(mean_harmony)))
+        # Use minimum length approach instead of padding to avoid bias
+        min_length = min(len(seq) for seq in harmony_scores)
+        if min_length > 0:
+            # Truncate all sequences to minimum length for fair comparison
+            truncated_scores = [seq[:min_length] for seq in harmony_scores]
+            scores_array = np.array(truncated_scores)
+            mean_harmony = np.mean(scores_array, axis=0)
+            std_harmony = np.std(scores_array, axis=0)
+            beat_numbers = list(range(len(mean_harmony)))
+            
+            # Log statistics for debugging
+            print(f"  Baseline: {len(harmony_scores)} sequences, {min_length} beats, "
+                  f"mean harmony: {np.mean(mean_harmony):.3f}")
+        else:
+            mean_harmony = np.array([])
+            std_harmony = np.array([])
+            beat_numbers = []
     else:
         mean_harmony = np.array([])
         std_harmony = np.array([])

@@ -43,7 +43,7 @@ wandb_features:
   bar_charts: true          # Create performance comparison bar charts
 
 # Performance Configuration
-num_test_sequences: 10  # Number of test sequences to evaluate (for speed)
+num_test_sequences: "all"  # Use all test sequences for comprehensive evaluation
 batch_size: 1  # Always use 1 for temporal evaluation
 
 # Advanced Parameters
