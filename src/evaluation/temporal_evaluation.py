@@ -157,23 +157,11 @@ def extract_scenario_sequences(input_tokens: torch.Tensor, target_tokens: torch.
         reference_tokens = target_tokens.clone()
         
     elif scenario == 'perturbed':
-        # Start with ground truth up to perturbation point
-        # Need enough context to reach perturbation beat (beat 17 = token index 35 for melody)
-        required_tokens = (perturbation_beat + 1) * 2  # +1 to include the perturbation beat
-        context_length = min(required_tokens, seq_len)
-        context_tokens = input_tokens[:, :context_length].clone()
+        # Start with minimal context like cold start, but apply perturbation during generation
+        # Models should generate from the beginning, with melody transposition applied from beat 17 onwards
+        context_tokens = input_tokens[:, :1].clone()  # Just first chord, same as cold start
         reference_tokens = target_tokens.clone()
-        
-        # Apply melody transposition perturbation at specified beat
-        perturbation_melody_idx = perturbation_beat * 2 + 1  # Convert beat to melody token index
-        if perturbation_melody_idx < context_length and perturbation_melody_idx < seq_len:
-            # Transpose melody by tritone (6 semitones) as in paper
-            original_melody_token = context_tokens[:, perturbation_melody_idx].item()
-            transposed_melody_token = transpose_melody_token(original_melody_token, semitones=6)
-            context_tokens[:, perturbation_melody_idx] = transposed_melody_token
-            print(f"Online model: Applied melody transposition (+6 semitones) at beat {perturbation_beat} (token index {perturbation_melody_idx})")
-        else:
-            print(f"Warning: Cannot perturb at beat {perturbation_beat} - beyond sequence length (need index {perturbation_melody_idx}, have {context_length})")
+        print(f"Online model: Perturbed scenario will apply melody transposition (+6 semitones) from beat {perturbation_beat} onwards during generation")
     
     else:
         raise ValueError(f"Unknown scenario: {scenario}")
@@ -455,9 +443,9 @@ def generate_offline_temporal(model, dataloader, tokenizer_info: Dict, device: t
                     # Start with PAD token (minimal context)
                     generated_chords = torch.full((batch_size, 1), pad_token_id, device=device)
                 elif scenario == 'perturbed':
-                    # Start with ground truth up to perturbation beat
-                    context_length = min(perturbation_beat, seq_length)
-                    generated_chords = ground_truth_chord_tokens[:, :context_length].clone()
+                    # Start with PAD token like cold start - models should generate from beginning
+                    # with melody transposition applied from beat 17 onwards
+                    generated_chords = torch.full((batch_size, 1), pad_token_id, device=device)
                 else:
                     continue
                 
