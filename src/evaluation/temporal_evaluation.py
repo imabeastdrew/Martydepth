@@ -18,10 +18,16 @@ from typing import Dict, List, Tuple, Optional
 from tqdm import tqdm
 import wandb
 from pathlib import Path
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 from src.evaluation.metrics import check_harmony
 from src.config.tokenization_config import SILENCE_TOKEN, CHORD_TOKEN_START, PAD_TOKEN
 from src.data.preprocess_frames import MIDITokenizer
+
+# Set style for better plots
+plt.style.use('default')
+sns.set_palette("husl")
 
 # Create a global tokenizer instance for efficiency
 _melody_tokenizer = None
@@ -835,3 +841,196 @@ def create_wandb_comparison_dashboard(online_results: Dict, offline_results: Dic
     
     wandb.finish()
     print("Created comprehensive WandB comparison dashboard") 
+
+
+def create_matplotlib_comparison_plots(online_results: Dict, offline_results: Dict, baseline_results: Dict,
+                                     save_dir: str = "temporal_plots", show_plots: bool = True) -> List[str]:
+    """
+    Create matplotlib comparison plots for temporal evaluation results.
+    
+    Args:
+        online_results: Results from online model temporal evaluation
+        offline_results: Results from offline model temporal evaluation  
+        baseline_results: Results from baseline temporal evaluation
+        save_dir: Directory to save the plots
+        show_plots: Whether to display plots inline
+        
+    Returns:
+        List of saved plot file paths
+    """
+    # Create save directory
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+    
+    scenarios = ['primed', 'cold_start', 'perturbed']
+    saved_files = []
+    
+    # Create one plot for each scenario
+    for scenario in scenarios:
+        plt.figure(figsize=(12, 8))
+        
+        # Plot baseline (ground truth)
+        if 'mean_harmony' in baseline_results and len(baseline_results['mean_harmony']) > 0:
+            beats = baseline_results['beat_numbers']
+            harmony = baseline_results['mean_harmony']
+            std = baseline_results['std_harmony']
+            
+            plt.plot(beats, harmony, 'k-', linewidth=3, label='Baseline (Ground Truth)', alpha=0.8)
+            plt.fill_between(beats, 
+                           np.array(harmony) - np.array(std), 
+                           np.array(harmony) + np.array(std), 
+                           alpha=0.2, color='black')
+        
+        # Plot online model
+        if scenario in online_results and 'mean_harmony' in online_results[scenario]:
+            data = online_results[scenario]
+            if len(data['mean_harmony']) > 0:
+                beats = data['beat_numbers']
+                harmony = data['mean_harmony']
+                std = data['std_harmony']
+                
+                plt.plot(beats, harmony, 'b-', linewidth=2.5, label='Online Model', marker='o', markersize=4)
+                plt.fill_between(beats, 
+                               np.array(harmony) - np.array(std), 
+                               np.array(harmony) + np.array(std), 
+                               alpha=0.2, color='blue')
+        
+        # Plot offline model
+        if scenario in offline_results and 'mean_harmony' in offline_results[scenario]:
+            data = offline_results[scenario]
+            if len(data['mean_harmony']) > 0:
+                beats = data['beat_numbers']
+                harmony = data['mean_harmony']
+                std = data['std_harmony']
+                
+                plt.plot(beats, harmony, 'r-', linewidth=2.5, label='Offline Model', marker='s', markersize=4)
+                plt.fill_between(beats, 
+                               np.array(harmony) - np.array(std), 
+                               np.array(harmony) + np.array(std), 
+                               alpha=0.2, color='red')
+        
+        # Customize plot
+        plt.xlabel('Beat', fontsize=14, fontweight='bold')
+        plt.ylabel('Harmony Quality', fontsize=14, fontweight='bold')
+        plt.title(f'Temporal Harmony Quality - {scenario.replace("_", " ").title()} Scenario', 
+                 fontsize=16, fontweight='bold', pad=20)
+        
+        # Add perturbation line for perturbed scenario
+        if scenario == 'perturbed':
+            plt.axvline(x=17, color='orange', linestyle='--', linewidth=2, alpha=0.7, 
+                       label='Perturbation (Beat 17)')
+        
+        plt.legend(fontsize=12, loc='best', framealpha=0.9)
+        plt.grid(True, alpha=0.3)
+        plt.xlim(left=0)
+        plt.ylim(0, 1)
+        
+        # Add scenario-specific annotations
+        if scenario == 'primed':
+            plt.text(0.02, 0.98, 'Models start with 8 beats\nof ground truth context', 
+                    transform=plt.gca().transAxes, fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+        elif scenario == 'cold_start':
+            plt.text(0.02, 0.98, 'Models start with minimal\ncontext and must adapt', 
+                    transform=plt.gca().transAxes, fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightcoral', alpha=0.7))
+        elif scenario == 'perturbed':
+            plt.text(0.02, 0.98, 'Melody transposed +6 semitones\nat beat 17 (tritone shift)', 
+                    transform=plt.gca().transAxes, fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7))
+        
+        plt.tight_layout()
+        
+        # Save plot
+        filename = f"temporal_comparison_{scenario}.png"
+        filepath = save_path / filename
+        plt.savefig(filepath, dpi=300, bbox_inches='tight', facecolor='white')
+        saved_files.append(str(filepath))
+        
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
+    
+    # Create summary statistics plot
+    plt.figure(figsize=(14, 8))
+    
+    # Prepare data for summary plot
+    models = []
+    scenarios_list = []
+    mean_harmonies = []
+    final_harmonies = []
+    trends = []
+    
+    # Add baseline data
+    if 'mean_harmony' in baseline_results and len(baseline_results['mean_harmony']) > 0:
+        models.append('Baseline')
+        scenarios_list.append('Ground Truth')
+        mean_harmonies.append(np.mean(baseline_results['mean_harmony']))
+        final_harmonies.append(baseline_results['mean_harmony'][-1])
+        trends.append(baseline_results['mean_harmony'][-1] - baseline_results['mean_harmony'][0])
+    
+    # Add model data
+    for model_name, results in [('Online', online_results), ('Offline', offline_results)]:
+        for scenario in scenarios:
+            if scenario in results and 'mean_harmony' in results[scenario]:
+                data = results[scenario]
+                if len(data['mean_harmony']) > 0:
+                    models.append(model_name)
+                    scenarios_list.append(scenario.replace('_', ' ').title())
+                    mean_harmonies.append(np.mean(data['mean_harmony']))
+                    final_harmonies.append(data['mean_harmony'][-1])
+                    trends.append(data['mean_harmony'][-1] - data['mean_harmony'][0])
+    
+    # Create subplots for summary statistics
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    
+    # Plot 1: Mean Harmony
+    x_labels = [f"{m}\n{s}" for m, s in zip(models, scenarios_list)]
+    colors = ['black' if m == 'Baseline' else 'blue' if m == 'Online' else 'red' for m in models]
+    
+    axes[0].bar(range(len(mean_harmonies)), mean_harmonies, color=colors, alpha=0.7)
+    axes[0].set_title('Mean Harmony Quality', fontsize=14, fontweight='bold')
+    axes[0].set_ylabel('Mean Harmony', fontsize=12)
+    axes[0].set_xticks(range(len(x_labels)))
+    axes[0].set_xticklabels(x_labels, rotation=45, ha='right')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_ylim(0, 1)
+    
+    # Plot 2: Final Harmony
+    axes[1].bar(range(len(final_harmonies)), final_harmonies, color=colors, alpha=0.7)
+    axes[1].set_title('Final Harmony Quality', fontsize=14, fontweight='bold')
+    axes[1].set_ylabel('Final Harmony', fontsize=12)
+    axes[1].set_xticks(range(len(x_labels)))
+    axes[1].set_xticklabels(x_labels, rotation=45, ha='right')
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_ylim(0, 1)
+    
+    # Plot 3: Harmony Trend
+    axes[2].bar(range(len(trends)), trends, color=colors, alpha=0.7)
+    axes[2].set_title('Harmony Trend (Final - Initial)', fontsize=14, fontweight='bold')
+    axes[2].set_ylabel('Harmony Change', fontsize=12)
+    axes[2].set_xticks(range(len(x_labels)))
+    axes[2].set_xticklabels(x_labels, rotation=45, ha='right')
+    axes[2].grid(True, alpha=0.3)
+    axes[2].axhline(y=0, color='gray', linestyle='-', alpha=0.5)
+    
+    plt.suptitle('Temporal Evaluation Summary Statistics', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    
+    # Save summary plot
+    summary_filename = "temporal_summary_statistics.png"
+    summary_filepath = save_path / summary_filename
+    plt.savefig(summary_filepath, dpi=300, bbox_inches='tight', facecolor='white')
+    saved_files.append(str(summary_filepath))
+    
+    if show_plots:
+        plt.show()
+    else:
+        plt.close()
+    
+    print(f"📊 Created {len(saved_files)} matplotlib plots in '{save_dir}' directory:")
+    for filepath in saved_files:
+        print(f"   • {Path(filepath).name}")
+    
+    return saved_files 
